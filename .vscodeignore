@@ -1,0 +1,6 @@
+test/**
+*.vsix
+node_modules/**
+backups/**
+title-patch.js
+VERIFICATION.md

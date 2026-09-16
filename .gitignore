@@ -1,0 +1,6 @@
+node_modules/
+backups/
+*.vsix
+VERIFICATION.md
+.DS_Store
+*.log

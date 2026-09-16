@@ -1,0 +1,72 @@
+{
+  "name": "codex-multi-tab",
+  "displayName": "Codex Multi Tab",
+  "description": "每次打开独立的官方 Codex 编辑器标签页。",
+  "version": "0.2.0",
+  "publisher": "yafan-local",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mofyer/codex-multi-tab.git"
+  },
+  "homepage": "https://github.com/mofyer/codex-multi-tab#readme",
+  "bugs": {
+    "url": "https://github.com/mofyer/codex-multi-tab/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
+  "extensionDependencies": [
+    "openai.chatgpt"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexMultiTab.newTab",
+        "title": "＋ Codex：新建独立标签页",
+        "shortTitle": "＋ Codex",
+        "icon": "$(add)"
+      },
+      {
+        "command": "codexMultiTab.newTabBeside",
+        "title": "Codex：在右侧新建独立标签页"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "codexMultiTab.newTab",
+          "group": "navigation@99"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "codexMultiTab.newTab",
+          "when": "view == chatgpt.sidebarView || view == chatgpt.sidebarSecondaryView",
+          "group": "navigation@99"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "codexMultiTab.newTab",
+        "key": "ctrl+alt+shift+n",
+        "mac": "cmd+alt+shift+n"
+      }
+    ]
+  },
+  "scripts": {
+    "check": "node --check extension.js && node --check title-patch.js",
+    "test": "node --test",
+    "title:check": "node title-patch.js dry-run",
+    "title:apply": "node title-patch.js apply",
+    "title:restore": "node title-patch.js restore"
+  }
+}
