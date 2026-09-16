@@ -2,7 +2,7 @@
   "name": "codex-multi-tab",
   "displayName": "Codex Multi Tab",
   "description": "独立 Codex 标签页、原生历史面板增强与更新兼容检查。",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "icon": "assets/icon.png",
   "publisher": "yafan-local",
   "private": true,
@@ -37,8 +37,8 @@
         "title": "Codex：新建独立标签页",
         "shortTitle": "新建 Codex",
         "icon": {
-          "light": "assets/icon.png",
-          "dark": "assets/icon.png"
+          "light": "assets/toolbar-icon.png",
+          "dark": "assets/toolbar-icon.png"
         }
       },
       {

@@ -56,7 +56,7 @@ npm run title:restore -- "<官方扩展实际安装目录>"
 npm run check
 npm test
 npx @vscode/vsce package
-code --install-extension codex-multi-tab-0.3.1.vsix
+code --install-extension codex-multi-tab-0.3.2.vsix
 ```
 
 测试覆盖标签隔离、原生增强、兼容检测、哈希校验、应用失败回滚和逐字节恢复。本机缺少对应官方安装包时，相关实包测试明确标记跳过。
