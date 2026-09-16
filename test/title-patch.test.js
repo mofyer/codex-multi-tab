@@ -8,12 +8,45 @@ const path = require('node:path');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
-const { patchExtension, transformHost, transformWebview, updatePanelTitle, observeTitle } = require('../title-patch');
+const { patchExtension, transformHost, transformWebview, updatePanelTitle, observeTitle, waitForOnboardingState } = require('../title-patch');
 
 const versions = {
   '26.5908.31748': 'app-initial-972655adec02.js',
   '26.908.40401': 'app-initial-a190b16fc630.js',
 };
+
+const nuxFixture = 'function lQn(){let{data:e,isLoading:t}=$g(xr.NUX_2025_09_15),{authMethod:n}=fu();if(!t){if(e)return`none`;switch(n){case`chatgpt`:return`2025-09-15-full-chatgpt-auth`;case`apikey`:return`2025-09-15-apikey-auth`;case null:return`none`}}}';
+
+// 执行变换前后的函数，复现 pending + idle 误进引导，而非只断言补丁文本存在。
+function verifyOnboardingGate(original, patched, name, queryHook, authHook) {
+  let state, authMethod = 'chatgpt';
+  const browser = browserFixture();
+  const context = { document: browser.doc, URLSearchParams, xr: { NUX_2025_09_15: 'nux' },
+    [queryHook]() { return state; }, [authHook]() { return { authMethod }; } };
+  const before = vm.runInNewContext(`${original};${name}`, context);
+  const after = vm.runInNewContext(`${patched};${name}`, context);
+  state = { status: 'pending', fetchStatus: 'idle', isLoading: false, data: false };
+  assert.equal(before(), '2025-09-15-full-chatgpt-auth');
+  assert.equal(after(), undefined);
+  state = { status: 'pending', fetchStatus: 'fetching', isLoading: true, data: false };
+  assert.equal(after(), undefined);
+  state = { status: 'success', fetchStatus: 'idle', isLoading: false, data: true };
+  assert.equal(after(), 'none');
+  state.data = false;
+  assert.equal(after(), '2025-09-15-full-chatgpt-auth');
+  authMethod = 'apikey';
+  assert.equal(after(), '2025-09-15-apikey-auth');
+  const failure = new Error('读取引导状态失败');
+  state = { status: 'error', fetchStatus: 'idle', isLoading: false, data: false, error: failure };
+  assert.throws(after, error => error === failure);
+  for (const route of [null, '/local/a', '/extension/panel/new', '/extension/panel/new?codexMultiTab=']) {
+    context.document = browserFixture(route).doc;
+    assert.equal(after(), before());
+    state = { status: 'pending', fetchStatus: 'idle', isLoading: false, data: false };
+    assert.equal(after(), before());
+    state = { status: 'error', fetchStatus: 'idle', isLoading: false, data: false, error: failure };
+  }
+}
 
 test('宿主补丁从消息 sender 定位，保持标签隔离并排除侧栏与非辅助标签', () => {
   const a = { title: 'Codex' }, b = { title: 'Codex' }, regular = { title: '原标签' };
@@ -66,7 +99,7 @@ function browserFixture(route = '/extension/panel/new?codexMultiTab=a') {
 test('webview 补丁只获取一次 API，初始发送并对标题变化节流去重', () => {
   const browser = browserFixture();
   let acquisitions = 0;
-  const source = transformWebview('let qf;function initialize(){qf=acquireVsCodeApi()}initialize();', 'qf');
+  const source = transformWebview(`let qf;function initialize(){qf=acquireVsCodeApi()}initialize();${nuxFixture}`, 'qf');
   vm.runInNewContext(source, { document: browser.doc, window: browser.win, URLSearchParams,
     acquireVsCodeApi() { acquisitions++; return browser.api; } });
   assert.equal(acquisitions, 1);
@@ -97,6 +130,16 @@ test('缺失或重复结构拒绝变换', () => {
   assert.throws(() => transformHost('unrecognized'), /特征/);
   assert.throws(() => transformHost('case"navigate-in-new-editor-tab":{let n=pI(r.path);'.repeat(2)), /特征/);
   assert.throws(() => transformWebview('x=acquireVsCodeApi()', 'qf'), /特征/);
+  assert.throws(() => transformWebview('qf=acquireVsCodeApi()', 'qf'), /特征/);
+  assert.throws(() => transformWebview(`qf=acquireVsCodeApi();${nuxFixture.repeat(2)}`, 'qf'), /特征/);
+});
+
+test('辅助标签等待读取引导状态，保留首次引导和错误；普通标签保持原行为', () => {
+  const transformed = transformWebview(`qf=acquireVsCodeApi();${nuxFixture}`, 'qf');
+  verifyOnboardingGate(nuxFixture, transformed.slice(transformed.indexOf('function lQn()')), 'lQn', '$g', 'fu');
+  const document = browserFixture().doc;
+  assert.equal(waitForOnboardingState('success', null, document), false);
+  assert.equal(waitForOnboardingState('pending', null, document), true);
 });
 
 for (const [version, asset] of Object.entries(versions)) {
@@ -149,6 +192,14 @@ for (const [version, asset] of Object.entries(versions)) {
     for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes);
     assert.equal(patchExtension(root, 'apply', backups).status, 'applied');
     assert.equal(patchExtension(root, 'apply', backups).status, 'already-applied');
+    const api = version === '26.5908.31748' ? 'qf' : 'Jf';
+    const name = version === '26.5908.31748' ? 'lQn' : 'pQn';
+    const originalWebview = originals.get(`webview/assets/${asset}`).toString();
+    const patchedWebview = fs.readFileSync(path.join(root, `webview/assets/${asset}`), 'utf8');
+    // 真实 bundle 的函数边界由相邻 var 声明限定，两版本都运行原函数和实际变换后的函数。
+    const extractNux = source => source.slice(source.indexOf(`function ${name}()`), source.indexOf('var ', source.indexOf(`function ${name}()`)));
+    verifyOnboardingGate(extractNux(originalWebview), extractNux(patchedWebview), name,
+      api === 'qf' ? '$g' : 'n_', api === 'qf' ? 'fu' : 'pu');
     const host = path.join(root, 'out/extension.js');
     const patched = fs.readFileSync(host);
     assert.notDeepEqual(patched, originals.get('out/extension.js'));
@@ -159,6 +210,17 @@ for (const [version, asset] of Object.entries(versions)) {
     assert.throws(() => patchExtension(root, 'restore', backups), /拒绝覆盖/);
     assert.equal(fs.readFileSync(host, 'utf8').endsWith('// other edit'), true);
     fs.writeFileSync(host, patched);
+    // 模拟旧标题补丁与其真实清单：新版必须拒绝假报已应用，仍允许恢复旧原件。
+    const backupDirectory = path.join(backups, fs.readdirSync(backups)[0]);
+    const manifestPath = path.join(backupDirectory, 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const titleAnchor = `${api}=acquireVsCodeApi()`;
+    const oldWebview = originalWebview.replace(titleAnchor, () => `${titleAnchor};(${observeTitle.toString()})(${api})`);
+    fs.writeFileSync(path.join(root, `webview/assets/${asset}`), oldWebview);
+    manifest.files[1].patchedHash = crypto.createHash('sha256').update(oldWebview).digest('hex');
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    assert.throws(() => patchExtension(root, 'dry-run', backups), /旧版本补丁.*restore/);
+    assert.throws(() => patchExtension(root, 'apply', backups), /旧版本补丁.*restore/);
     assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
     for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes);
     assert.equal(patchExtension(root, 'restore', backups).status, 'not-applied');

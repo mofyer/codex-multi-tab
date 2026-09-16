@@ -10,11 +10,13 @@ const PROFILES = {
   '26.5908.31748': {
     asset: 'webview/assets/app-initial-972655adec02.js',
     api: 'qf',
+    nuxAnchor: 'function lQn(){let{data:e,isLoading:t}=$g(xr.NUX_2025_09_15),{authMethod:n}=fu();',
     webHash: '919609dae54b1918456a1039eef6146dee869ec86061b7e845bc919e6fdbb5d5',
   },
   '26.908.40401': {
     asset: 'webview/assets/app-initial-a190b16fc630.js',
     api: 'Jf',
+    nuxAnchor: 'function pQn(){let{data:e,isLoading:t}=n_(xr.NUX_2025_09_15),{authMethod:n}=pu();',
     webHash: '50b1a443400ba2f7ac0be53c56536a3e145bccfff0e2f456f100850133a01683',
   },
 };
@@ -63,6 +65,15 @@ function replaceOnce(source, anchor, replacement) {
   return source.replace(anchor, () => replacement);
 }
 
+// 新面板查询尚未启动时 isLoading 仍为 false；等待读取成功才判断首次引导。
+function waitForOnboardingState(status, error, doc = document) {
+  const route = doc.querySelector('meta[name="initial-route"]')?.content;
+  if (typeof route !== 'string' || !route.includes('?')) return false;
+  if (!new URLSearchParams(route.slice(route.indexOf('?') + 1)).get('codexMultiTab')) return false;
+  if (status === 'error') throw error;
+  return status !== 'success';
+}
+
 function transformHost(source) {
   return replaceOnce(source, HOST_ANCHOR,
     `case"codex-multi-tab-title":{(${updatePanelTitle.toString()})(this,e,r.title);break;}${HOST_ANCHOR}`);
@@ -70,7 +81,12 @@ function transformHost(source) {
 
 function transformWebview(source, api) {
   const anchor = `${api}=acquireVsCodeApi()`;
-  return replaceOnce(source, anchor, `${anchor};(${observeTitle.toString()})(${api})`);
+  const profile = Object.values(PROFILES).find(item => item.api === api);
+  if (!profile) throw new Error('未知 webview 补丁配置，拒绝修改');
+  const withTitle = replaceOnce(source, anchor, `${anchor};(${observeTitle.toString()})(${api})`);
+  const nuxReplacement = profile.nuxAnchor.replace('isLoading:t}', 'isLoading:t,status:codexNuxStatus,error:codexNuxError}')
+    + `if((${waitForOnboardingState.toString()})(codexNuxStatus,codexNuxError))return;`;
+  return replaceOnce(withTitle, profile.nuxAnchor, nuxReplacement);
 }
 
 function hash(bytes) {
@@ -116,6 +132,10 @@ function patchExtension(directory, action = 'dry-run', backupRoot = path.join(__
       }
       fs.rmSync(backup, { recursive: true });
       return { status: 'restored', version: pkg.version, files: expectedFiles };
+    }
+    if (entries.some((entry, index) => entry.patchedHash !== hash(Buffer.from(index === 0
+      ? transformHost(entry.original.toString('utf8')) : transformWebview(entry.original.toString('utf8'), profile.api))))) {
+      throw new Error('发现旧版本补丁，请先 restore 再 apply');
     }
     if (!entries.every(entry => entry.currentHash === entry.patchedHash)) throw new Error('发现未完成的补丁，请先 restore 再 apply');
     return { status: 'already-applied', version: pkg.version, files: expectedFiles };
@@ -170,4 +190,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { patchExtension, transformHost, transformWebview, updatePanelTitle, observeTitle };
+module.exports = { patchExtension, transformHost, transformWebview, updatePanelTitle, observeTitle, waitForOnboardingState };
