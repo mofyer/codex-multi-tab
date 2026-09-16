@@ -2,9 +2,9 @@
   "name": "codex-multi-tab",
   "displayName": "Codex Multi Tab",
   "description": "独立 Codex 标签页、原生历史面板增强与更新兼容检查。",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "icon": "assets/icon.png",
-  "publisher": "yafan-local",
+  "publisher": "mofyer",
   "private": true,
   "repository": {
     "type": "git",
@@ -19,6 +19,12 @@
   },
   "categories": [
     "Other"
+  ],
+  "keywords": [
+    "codex",
+    "multi-tab",
+    "chat",
+    "history"
   ],
   "extensionKind": [
     "ui"
