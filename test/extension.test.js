@@ -14,6 +14,7 @@ function setup({ missing = false, activationError, openError } = {}) {
     Uri: { from: (parts) => ({ ...parts }) },
     ViewColumn: { Active: -1, Beside: -2 },
     extensions: {
+      onDidChange() { return { dispose() {} }; },
       getExtension(id) {
         assert.equal(id, 'openai.chatgpt');
         return missing ? undefined : {
@@ -37,7 +38,7 @@ function setup({ missing = false, activationError, openError } = {}) {
     window: { async showErrorMessage(message) { errors.push(message); } },
   };
   const originalLoad = Module._load;
-  const context = { subscriptions: [] };
+  const context = { subscriptions: [], globalStorageUri: { fsPath: '/test/global-storage' } };
   try {
     Module._load = function (id, ...args) {
       return id === 'vscode' ? vscode : originalLoad.call(this, id, ...args);

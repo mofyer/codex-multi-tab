@@ -1,10 +1,12 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
+const { createCompatibilityManager } = require('./compatibility-manager');
 
 /** 注册命令，复用官方界面；唯一查询参数让每次新建拥有不同资源地址。 */
 function activate(context) {
   const vscode = require('vscode');
+  context.subscriptions.push(createCompatibilityManager(vscode, context));
 
   async function openNewTab(beside) {
     try {

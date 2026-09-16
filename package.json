@@ -1,8 +1,9 @@
 {
   "name": "codex-multi-tab",
   "displayName": "Codex Multi Tab",
-  "description": "每次打开独立的官方 Codex 编辑器标签页。",
-  "version": "0.2.1",
+  "description": "独立 Codex 标签页、原生历史面板增强与更新兼容检查。",
+  "version": "0.3.1",
+  "icon": "assets/icon.png",
   "publisher": "yafan-local",
   "private": true,
   "repository": {
@@ -25,14 +26,20 @@
   "extensionDependencies": [
     "openai.chatgpt"
   ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./extension.js",
   "contributes": {
     "commands": [
       {
         "command": "codexMultiTab.newTab",
-        "title": "＋ Codex：新建独立标签页",
-        "shortTitle": "＋ Codex",
-        "icon": "$(add)"
+        "title": "Codex：新建独立标签页",
+        "shortTitle": "新建 Codex",
+        "icon": {
+          "light": "assets/icon.png",
+          "dark": "assets/icon.png"
+        }
       },
       {
         "command": "codexMultiTab.newTabBeside",
@@ -63,7 +70,7 @@
     ]
   },
   "scripts": {
-    "check": "node --check extension.js && node --check title-patch.js",
+    "check": "node --check extension.js && node --check title-patch.js && node --check native-history-patch.js && node --check compatibility-manager.js",
     "test": "node --test",
     "title:check": "node title-patch.js dry-run",
     "title:apply": "node title-patch.js apply",
