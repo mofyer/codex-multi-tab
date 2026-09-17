@@ -2,5 +2,6 @@ node_modules/
 backups/
 *.vsix
 VERIFICATION.md
+[Cc][Ll][Aa][Uu][Dd][Ee].md
 .DS_Store
 *.log
