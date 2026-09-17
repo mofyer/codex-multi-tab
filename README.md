@@ -1,5 +1,7 @@
 # Codex Multi Tab
 
+简体中文 | [English](README.en.md)
+
 <img src="assets/icon.png" alt="Codex Multi Tab 图标" width="96" height="96">
 
 在 VS Code 中打开多个独立 Codex 标签，按当前项目管理会话，并在侧栏查看官方账号与用量。
