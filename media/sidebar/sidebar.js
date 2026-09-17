@@ -5,6 +5,8 @@
   const saved = vscode.getState() || {};
   const elements = Object.fromEntries([
     'account-panel', 'account-name', 'account-plan', 'account-expiry', 'account-note', 'refresh', 'usage',
+    'save-account', 'add-account', 'cancel-account-login', 'accounts-message', 'saved-accounts',
+    'saved-accounts-heading', 'account-list', 'accounts-scope', 'runtime-version',
     'credits', 'credits-count', 'global-error', 'new-tab', 'search', 'threads-status', 'thread-list', 'load-more',
   ].map((id) => [id, document.getElementById(id)]));
   let state = {};
@@ -16,6 +18,7 @@
   let creditsExpanded = saved.creditsExpanded === true;
   let threadDay = new Date().toDateString();
   let threadSignature;
+  let accountSignature;
   let threadMenu;
   let menuReturnFocus;
   // 与官方侧栏套餐标签表对齐；不推导受实验开关控制的 Pro 等级。
@@ -66,7 +69,70 @@
       accountExpanded: elements['account-panel'].open,
       usageExpanded,
       creditsExpanded,
+      savedAccountsExpanded: elements['saved-accounts'].open,
     });
+  }
+
+  function planLabel(value) {
+    const type = text(value);
+    return planLabels.get(type) || (type === 'unknown' ? '未知（unknown）'
+      : ['free', 'go', 'plus'].includes(type) ? `${type[0].toUpperCase()}${type.slice(1)}`
+        : type ? `${type}（官方类型）` : '套餐未知');
+  }
+
+  function renderAccounts() {
+    if (elements['runtime-version']) notice(elements['runtime-version'], state.runtime?.version
+      ? `运行版本 ${text(state.runtime.version)}${state.runtime.development ? ' · 开发模式' : ''}` : '');
+    const accounts = state.accounts || {};
+    const supported = accounts.supported === true;
+    const blocked = !supported || Boolean(accounts.busy || accounts.pendingLogin || state.credits?.busyId || resetPendingId);
+    elements['save-account'].disabled = blocked || state.account?.status !== 'ready';
+    elements['add-account'].disabled = blocked;
+    elements['cancel-account-login'].hidden = !accounts.pendingLogin;
+    elements['cancel-account-login'].disabled = !supported;
+    elements['accounts-scope'].hidden = !supported;
+    notice(elements['accounts-message'], text(accounts.message, !supported ? '当前环境暂不支持多账号切换'
+      : accounts.pendingLogin ? '请在浏览器完成登录，完成后将自动保存账号。'
+        : accounts.busy ? '正在处理账号…' : ''));
+    const entries = items(accounts.items).filter((entry) => entry && typeof entry === 'object' && text(entry.id));
+    elements['saved-accounts'].hidden = !supported;
+    elements['saved-accounts-heading'].textContent = `已保存账号（${entries.length}）`;
+    const signature = JSON.stringify([entries.map(({ id, email, label, planType, isCurrent }) => ({ id, email, label, planType, isCurrent })), blocked]);
+    if (signature === accountSignature) return;
+    accountSignature = signature;
+    const container = elements['account-list'];
+    const focused = container.contains(document.activeElement) ? document.activeElement : null;
+    const focusId = focused?.dataset.accountId;
+    const focusAction = focused?.dataset.accountAction;
+    container.replaceChildren();
+    if (!entries.length) container.append(node('p', 'notice', '尚未保存账号，可保存当前账号或添加其他账号。'));
+    for (const entry of entries) {
+      const row = node('div', 'saved-account');
+      const heading = node('div', 'saved-account-heading');
+      const identity = node('div', 'saved-account-identity');
+      identity.append(node('strong', '', text(entry.label, text(entry.email, '已保存账号'))));
+      if (text(entry.label) && text(entry.email)) identity.append(node('span', 'muted', entry.email));
+      heading.append(identity);
+      if (entry.isCurrent === true) heading.append(node('span', 'badge available', '当前'));
+      row.append(heading, node('span', 'saved-account-plan muted', planLabel(entry.planType)));
+      const actions = node('div', 'account-actions');
+      for (const [type, label] of [['switchAccount', '切换'], ['renameAccount', '重命名'], ['removeAccount', '移除']]) {
+        const button = node('button', 'account-button', label);
+        button.dataset.accountId = entry.id;
+        button.dataset.accountAction = type;
+        if (type === 'switchAccount') button.title = '切换将重载当前窗口，请先保存草稿并结束任务';
+        button.disabled = blocked || (type === 'switchAccount' && entry.isCurrent === true);
+        button.setAttribute('aria-label', `${label}：${text(entry.label, text(entry.email, '已保存账号'))}`);
+        button.addEventListener('click', () => send(type, { accountId: entry.id }));
+        actions.append(button);
+      }
+      row.append(actions);
+      container.append(row);
+    }
+    if (focused) {
+      const replacement = [...container.querySelectorAll('button')].find((button) => button.dataset.accountId === focusId && button.dataset.accountAction === focusAction && !button.disabled);
+      (replacement || elements['saved-accounts-heading']).focus();
+    }
   }
 
   function renderUsage() {
@@ -165,10 +231,11 @@
       const busy = credits.busyId === entry.id || resetPendingId === entry.id;
       const button = node('button', 'reset-credit', busy ? '处理中' : '重置');
       button.setAttribute('aria-label', `${busy ? '正在处理' : '重置额度'}：${text(entry.title, '额度重置卡')}`);
-      button.disabled = !available || !text(entry.id) || !state.capabilities?.reset || Boolean(credits.busyId || resetPendingId);
+      button.disabled = !available || !text(entry.id) || !state.capabilities?.reset || Boolean(credits.busyId || resetPendingId || state.accounts?.busy || state.accounts?.pendingLogin);
       if (!state.capabilities?.reset) button.title = '当前官方接口不支持额度重置';
       button.addEventListener('click', () => {
         resetPendingId = entry.id;
+        renderAccounts();
         renderCredits();
         send('resetCredit', { creditId: entry.id });
       });
@@ -349,18 +416,16 @@
     const account = state.account || {};
     elements['account-name'].textContent = text(account.email, text(account.message, account.status === 'signed-out' ? '尚未登录 Codex' : account.status === 'ready' ? 'API Key 登录' : '账号信息暂不可用'));
     const planType = text(account.planType);
-    const planLabel = planLabels.get(planType) || (planType === 'unknown' ? '未知（unknown）'
-      : ['free', 'go', 'plus'].includes(planType) ? `${planType[0].toUpperCase()}${planType.slice(1)}`
-        : `${planType}（官方类型）`);
     elements['account-plan'].textContent = account.status === 'signed-out' ? '登录后查看套餐'
       : account.status === 'ready' && /API\s*Key/i.test(text(account.message)) ? 'API Key 按量计费'
-        : planType ? `当前套餐：${planLabel}` : '套餐信息暂不可用';
+        : planType ? `当前套餐：${planLabel(planType)}` : '套餐信息暂不可用';
     notice(elements['account-expiry'], date(account.expiresAt) ? `账号到期：${date(account.expiresAt)}` : '');
     notice(elements['account-note'], text(account.message));
     notice(elements['global-error'], text(state.error));
-    elements.refresh.disabled = Boolean(state.loading);
+    elements.refresh.disabled = Boolean(state.loading || state.accounts?.busy || state.accounts?.pendingLogin);
     elements.refresh.classList.toggle('is-loading', Boolean(state.loading));
     renderUsage();
+    renderAccounts();
     renderCredits();
     // 账号定时刷新会传来深拷贝状态；仅会话内容或操作权限变化时重建列表。
     const nextThreadSignature = JSON.stringify([
@@ -388,6 +453,11 @@
 
   elements.search.value = text(saved.query);
   elements['account-panel'].open = saved.accountExpanded !== false;
+  elements['saved-accounts'].open = saved.savedAccountsExpanded === true;
+  elements['saved-accounts'].addEventListener('toggle', persist);
+  elements['save-account'].addEventListener('click', () => send('saveAccount'));
+  elements['add-account'].addEventListener('click', () => send('addAccount'));
+  elements['cancel-account-login'].addEventListener('click', () => send('cancelAccountLogin'));
   elements.search.addEventListener('input', () => {
     persist();
     clearTimeout(searchTimer);

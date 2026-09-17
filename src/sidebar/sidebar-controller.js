@@ -2,6 +2,7 @@
 
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
+const { createAccountController } = require('../accounts/account-controller');
 const BRIDGE = 'codexMultiTab.internalBridge';
 const validId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(value);
 const seconds = value => Number.isFinite(value) && value > 0 ? value : undefined;
@@ -71,7 +72,7 @@ function normalizeThread(raw, pinned, opened) {
 }
 
 /** 管理侧栏异步状态；数据通过当前官方连接取得，不读取认证文件。 */
-function createSidebarController(vscode, context, { postState, openNewTab, openThreadTab, timers = globalThis }) {
+function createSidebarController(vscode, context, { postState, openNewTab, openThreadTab, timers = globalThis, accountStoreFactory }) {
   let disposed = false;
   let generation = 0;
   let listGeneration = 0;
@@ -94,6 +95,8 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
   const openings = new Map();
   const resetKeys = new Map();
   const state = {
+    runtime: { version: text(context.extension?.packageJSON?.version || require('../../package.json').version, 40),
+      development: vscode.ExtensionMode?.Development !== undefined && context.extensionMode === vscode.ExtensionMode.Development },
     loading: false, account: { status: 'unavailable', message: '等待连接官方 Codex。' },
     usage: { status: 'unavailable', windows: [] }, credits: { status: 'unavailable', items: [] },
     threads: { items: [], loading: false, hasMore: false, query: '' },
@@ -103,6 +106,16 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
   const bridge = request => vscode.commands.executeCommand(BRIDGE, request);
   const rpc = (method, params) => bridge({ action: 'rpc', method, params });
   const info = message => { if (!disposed) return vscode.window.showInformationMessage(message); };
+  const accounts = createAccountController(vscode, context, {
+    bridge, timers, storeFactory: accountStoreFactory,
+    changed(value) { state.accounts = value; emit(); },
+    canStart: () => !resetBusy,
+    async waitForAccount() {
+      accountGeneration++;
+      if (accountFlight) await accountFlight.catch(() => undefined);
+    },
+    refresh,
+  });
 
   function workspaceScope() {
     const folders = vscode.workspace?.workspaceFolders || [];
@@ -149,7 +162,7 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
   }
 
   async function refreshAccount(automatic = false) {
-    if (disposed || resetBusy || (automatic && accountFlight)) return;
+    if (disposed || resetBusy || accounts.busy || (automatic && accountFlight)) return;
     const token = ++accountGeneration;
     // 手动刷新共用正在进行的账号快照；计时器遇慢请求直接跳过，不排队堆积。
     if (!accountFlight) {
@@ -169,7 +182,7 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
     }
     try {
       const snapshot = await accountFlight;
-      if (disposed || resetBusy || token !== accountGeneration) return;
+      if (disposed || resetBusy || accounts.busy || token !== accountGeneration) return;
       const value = snapshot.account.account;
       state.account = value == null ? { status: 'signed-out', message: '请先在官方 Codex 中登录。' }
         : value.type === 'chatgpt' ? { status: 'ready', email: text(value.email), planType: text(value.planType, 80) }
@@ -184,8 +197,10 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
         state.capabilities.reset = false;
       }
       state.error = undefined;
+      await accounts.update(value?.type === 'chatgpt' ? { ...value,
+        accountId: snapshot.limits?.status === 'fulfilled' ? snapshot.limits.value.accountId : undefined } : null);
     } catch {
-      if (disposed || resetBusy || token !== accountGeneration) return;
+      if (disposed || resetBusy || accounts.busy || token !== accountGeneration) return;
       state.account = { status: 'unavailable', message: '账号信息暂时不可用。' };
       state.usage = { status: 'unavailable', windows: [], message: '官方用量接口暂不可用。' };
       state.credits = { status: 'unavailable', items: [], message: '重置卡信息暂不可用。' };
@@ -335,7 +350,7 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
   }
 
   async function refresh() {
-    if (disposed) return;
+    if (disposed || accounts.busy) return;
     if (resetBusy) return loadThreads();
     const token = ++generation;
     accountGeneration++;
@@ -447,7 +462,7 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
   }
 
   async function resetCredit(id) {
-    if (!ready || resetBusy || typeof id !== 'string' || !state.credits.items.some(card => card.id === id && card.available)) return;
+    if (!ready || resetBusy || accounts.busy || typeof id !== 'string' || !state.credits.items.some(card => card.id === id && card.available)) return;
     resetBusy = true;
     accountGeneration++;
     state.credits.busyId = id;
@@ -491,6 +506,8 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
 
   async function handleMessage(message) {
     if (disposed || !message || typeof message.type !== 'string') return;
+    if (await accounts.handle(message.type, message.accountId)) return;
+    if (accounts.busy && message.type !== 'stopThread') return;
     switch (message.type) {
       case 'ready': startAccountTimer(); return refresh();
       case 'refresh': return refresh();
@@ -523,6 +540,7 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
   if (workspaceSubscription) context.subscriptions?.push(workspaceSubscription);
   return { handleMessage, dispose() {
     disposed = true; generation++; listGeneration++; scopeGeneration++; accountGeneration++;
+    accounts.dispose();
     if (accountTimer !== undefined) timers.clearInterval(accountTimer);
     if (runtimeTimer !== undefined) timers.clearInterval(runtimeTimer);
     workspaceSubscription?.dispose();

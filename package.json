@@ -1,8 +1,8 @@
 {
   "name": "codex-multi-tab",
   "displayName": "Codex Multi Tab",
-  "description": "独立 Codex 多 Tab 与分屏，按项目管理会话，查看官方账号用量及重置时间。",
-  "version": "0.4.4",
+  "description": "独立 Codex 多 Tab 与分屏，按项目管理会话，保存并切换多个官方账号，查看用量及重置时间。",
+  "version": "0.5.2",
   "icon": "assets/icon.png",
   "publisher": "mofyer",
   "private": true,

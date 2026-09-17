@@ -179,3 +179,115 @@ test('离开 webview 点击编辑器或外层空白时关闭菜单且不抢回�
   assert.equal(ui.document.activeElement, ui.document.body);
   assert.equal(ui.messages.some((message) => message.type === 'stopThread'), false);
 });
+
+const accountsState = (fields = {}) => ({
+  supported: true, busy: false, pendingLogin: false,
+  items: [
+    { id: 'account-a', label: '工作', email: 'work@example.test', planType: 'pro', isCurrent: true },
+    { id: 'account-b', label: '个人', email: 'personal@example.test', planType: 'plus', isCurrent: false },
+  ],
+  ...fields,
+});
+
+test('账号入口与列表操作只发送对应命令和账号 ID', () => {
+  const ui = sidebar();
+  ui.state([], {}, { account: { status: 'ready' }, accounts: accountsState() });
+  assert.equal(ui.ids.get('saved-accounts-heading').textContent, '已保存账号（2）');
+  assert.equal(ui.ids.get('saved-accounts').hidden, false);
+  for (const [id, type] of [['save-account', 'saveAccount'], ['add-account', 'addAccount']]) {
+    ui.ids.get(id).emit('click');
+    assert.deepEqual(ui.messages.at(-1), { type });
+  }
+  const rows = ui.document.querySelectorAll('.saved-account');
+  assert.equal(rows[0].querySelector('.badge').textContent, '当前');
+  assert.equal(rows[0].querySelector('button').disabled, true);
+  assert.equal(rows[1].querySelector('.saved-account-plan').textContent, 'Plus');
+  assert.match(rows[1].querySelector('button').title, /重载当前窗口/);
+  for (const [index, type] of ['switchAccount', 'renameAccount', 'removeAccount'].entries()) {
+    rows[1].querySelectorAll('button')[index].emit('click');
+    assert.deepEqual(ui.messages.at(-1), { type, accountId: 'account-b' });
+  }
+});
+
+test('账号操作中及登录中禁用账号操作和额度重置，登录中允许取消', () => {
+  for (const accounts of [accountsState({ busy: true }), accountsState({ busy: true, pendingLogin: true }), accountsState({ pendingLogin: true })]) {
+    const ui = sidebar();
+    ui.state([], { reset: true }, {
+      account: { status: 'ready' }, accounts,
+      credits: { status: 'ready', items: [{ id: 'card', available: true }] },
+    });
+    const actions = [ui.ids.get('save-account'), ui.ids.get('add-account'), ui.ids.get('refresh'),
+      ...ui.document.querySelectorAll('.saved-account').flatMap((row) => row.querySelectorAll('button')),
+      ...ui.document.querySelectorAll('.reset-credit')];
+    const before = ui.messages.length;
+    for (const action of actions) { assert.equal(action.disabled, true); action.emit('click'); }
+    assert.equal(ui.messages.length, before);
+    const cancel = ui.ids.get('cancel-account-login');
+    assert.equal(cancel.hidden, !accounts.pendingLogin);
+    if (accounts.pendingLogin) {
+      assert.equal(cancel.disabled, false);
+      cancel.emit('click');
+      assert.deepEqual(ui.messages.at(-1), { type: 'cancelAccountLogin' });
+    }
+  }
+});
+
+test('不支持和旧版状态隐藏列表并解释原因，未登录仍可添加账号', () => {
+  for (const accounts of [undefined, accountsState({ supported: false, message: '当前登录由系统钥匙串管理' })]) {
+    const ui = sidebar(); ui.state([], {}, { accounts });
+    assert.equal(ui.ids.get('save-account').disabled, true);
+    assert.equal(ui.ids.get('add-account').disabled, true);
+    assert.equal(ui.ids.get('saved-accounts').hidden, true);
+    assert.equal(ui.ids.get('accounts-scope').hidden, true);
+    assert.match(ui.ids.get('accounts-message').textContent, accounts ? /钥匙串/ : /暂不支持/);
+  }
+  const ui = sidebar(); ui.state([], {}, { account: { status: 'signed-out' }, accounts: accountsState({ items: [] }) });
+  assert.equal(ui.ids.get('save-account').disabled, true);
+  assert.equal(ui.ids.get('add-account').disabled, false);
+  assert.match(ui.ids.get('account-list').querySelector('p').textContent, /尚未保存/);
+});
+
+test('账号数据作为文本显示且不将凭据渲染或发送到动作中', () => {
+  const ui = sidebar();
+  const payload = '<img src=x onerror=alert(1)>';
+  ui.state([], {}, { accounts: accountsState({
+    items: [{ id: 'account-x', email: payload, label: payload, planType: payload, token: 'secret-token', credentials: 'secret-credentials' }],
+    message: payload,
+  }) });
+  const row = ui.document.querySelectorAll('.saved-account')[0];
+  assert.equal(row.querySelector('strong').textContent, payload);
+  assert.equal(row.querySelector('.muted').textContent, payload);
+  assert.equal(ui.ids.get('accounts-message').textContent, payload);
+  assert.equal(ui.document.querySelectorAll('img').length, 0);
+  const allText = (element) => element.textContent + element.children.map(allText).join('');
+  assert.doesNotMatch(allText(ui.document.body), /secret-token|secret-credentials/);
+  row.querySelector('button').emit('click');
+  assert.deepEqual(ui.messages.at(-1), { type: 'switchAccount', accountId: 'account-x' });
+});
+
+test('普通状态刷新保持账号按钮及焦点，列表变更后恢复对应操作焦点', () => {
+  const ui = sidebar();
+  ui.state([], {}, { accounts: accountsState() });
+  const button = ui.document.querySelectorAll('.saved-account')[1].querySelectorAll('button')[1];
+  button.focus();
+  ui.state([], {}, { account: { email: 'changed@example.test' }, accounts: accountsState() });
+  assert.equal(ui.document.activeElement, button);
+  assert.equal(ui.document.querySelectorAll('.saved-account')[1].querySelectorAll('button')[1], button);
+  const updated = accountsState(); updated.items[1].label = '新名称';
+  ui.state([], {}, { accounts: updated });
+  assert.equal(ui.document.activeElement.dataset.accountId, 'account-b');
+  assert.equal(ui.document.activeElement.dataset.accountAction, 'renameAccount');
+  assert.notEqual(ui.document.activeElement, button);
+  ui.state([], {}, { accounts: accountsState({ busy: true }) });
+  assert.equal(ui.document.activeElement, ui.ids.get('saved-accounts-heading'));
+});
+
+test('账号面板显示宿主提供的实际运行版本并区分开发模式', () => {
+  const ui = sidebar();
+  ui.state([], {}, { runtime: { version: '0.5.2', development: true } });
+  assert.equal(ui.ids.get('runtime-version').textContent, '运行版本 0.5.2 · 开发模式');
+  ui.state([], {}, { runtime: { version: '0.5.2', development: false } });
+  assert.equal(ui.ids.get('runtime-version').textContent, '运行版本 0.5.2');
+  ui.state([]);
+  assert.equal(ui.ids.get('runtime-version').hidden, true);
+});

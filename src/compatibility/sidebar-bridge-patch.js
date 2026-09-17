@@ -31,6 +31,9 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
   const runtimeReads = new Map();
   const stopping = new Set();
   const stopTickets = new Map();
+  const accountLogins = new Map();
+  let accountLoginStarting = false;
+  let accountActivityRevision = 0;
   let disposed = false;
   let sequence = 0;
   const validId = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(id);
@@ -52,6 +55,15 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
   const provider = host.codexMcpConnection.registerProvider(providerName, {
     onNotification(message) {
       const params = message?.params;
+      if (!disposed && ((message?.method === 'thread/status/changed' && params?.status?.type === 'active')
+        || message?.method === 'turn/started')) accountActivityRevision++;
+      if (!disposed && message?.method === 'account/login/completed') {
+        if (validId(params?.loginId) && typeof params.success === 'boolean'
+          && (accountLogins.has(params.loginId) || accountLoginStarting)) {
+          rememberLogin(params.loginId, params.success ? 'success' : 'failed');
+        }
+        return;
+      }
       if (disposed || !validId(params?.threadId) || !runtimes.has(params.threadId)) return;
       const previous = runtimes.get(params.threadId);
       if (message.method === 'thread/status/changed') {
@@ -71,6 +83,8 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
       finish(message.id, message.error || message.result == null ? failure('RPC_FAILED') : null, message.result);
     },
     onFatalError() {
+      accountActivityRevision++;
+      for (const [id, login] of accountLogins) if (login.status === 'pending') rememberLogin(id, 'failed');
       for (const ticket of stopTickets.values()) clearTimeout(ticket.timer);
       stopTickets.clear();
       for (const [id, value] of runtimes) runtimes.set(id, { revision: value.revision + 1, known: false });
@@ -79,13 +93,24 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
   });
 
   // 对系统边界的参数做最小限制；不暴露 token 读取、模型执行或任意方法转发。
-  function rpc(method, input, internal = false) {
+  function rpc(method, input, internal = false, requestTimeoutMs = timeoutMs) {
     const allowed = new Set(['account/read', 'account/rateLimits/read', 'account/rateLimitResetCredit/consume',
       'thread/list', 'thread/search', 'thread/read', 'thread/name/set']);
-    if (internal) { allowed.add('thread/turns/list'); allowed.add('turn/interrupt'); }
+    if (internal) {
+      for (const method of ['thread/turns/list', 'turn/interrupt', 'thread/loaded/list', 'account/login/start', 'account/login/cancel', 'config/read']) allowed.add(method);
+    }
     if (!allowed.has(method)) throw failure('UNSUPPORTED_METHOD');
     if (input != null && (typeof input !== 'object' || Array.isArray(input))) throw failure('INVALID_REQUEST');
     const params = { ...input };
+    if (method === 'config/read'
+      && (params.includeLayers !== false || Object.keys(params).length !== 1)) throw failure('INVALID_REQUEST');
+    if (method === 'account/login/start'
+      && (params.type !== 'chatgpt' || Object.keys(params).length !== 1)) throw failure('INVALID_REQUEST');
+    if (method === 'account/login/cancel'
+      && (!validId(params.loginId) || Object.keys(params).length !== 1)) throw failure('INVALID_REQUEST');
+    if (method === 'thread/loaded/list'
+      && (Object.keys(params).some(key => !['limit', 'cursor'].includes(key)) || params.limit !== 100
+        || (params.cursor != null && (typeof params.cursor !== 'string' || params.cursor.length > 8192)))) throw failure('INVALID_REQUEST');
     if (method === 'turn/interrupt') {
       if (!validId(params.threadId) || !validId(params.turnId)
         || Object.keys(params).some(key => !['threadId', 'turnId'].includes(key))) throw failure('INVALID_REQUEST');
@@ -132,11 +157,113 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
       const timer = setTimeout(() => {
         host.codexMcpConnection.abandonRequest(providerName, id);
         finish(id, failure('RPC_TIMEOUT'));
-      }, timeoutMs);
+      }, requestTimeoutMs);
       pending.set(id, { resolve, reject, timer });
       try { host.codexMcpConnection.sendRequest(providerName, id, method, params); }
       catch { finish(id, failure('RPC_FAILED')); }
     });
+  }
+
+  function rememberLogin(id, status) {
+    accountLogins.set(id, { status, expiresAt: Date.now() + 15 * 60 * 1000 });
+    for (const [key, value] of accountLogins) if (value.expiresAt <= Date.now()) accountLogins.delete(key);
+    while (accountLogins.size > 20) accountLogins.delete(accountLogins.keys().next().value);
+  }
+
+  async function accountEnvironment() {
+    const messages = {
+      remote: '多账号暂不支持远程 Codex 环境，请在本机窗口使用。',
+      wsl: '多账号暂不支持 WSL 环境，请在本机 Codex 环境使用。',
+      'local-host-unavailable': '无法确认本机 Codex 运行环境，请重载窗口后重试。',
+      'home-unavailable': '无法确认本机 Codex 登录缓存目录，请重载窗口后重试。',
+      'auth-storage-unsupported': '当前登录缓存方式不支持多账号；需要文件式 ChatGPT 登录缓存。',
+      'login-method-restricted': '当前配置限制为非 ChatGPT 登录方式，无法使用多账号。',
+      'workspace-restriction-invalid': '无法确认当前 ChatGPT 工作区限制，暂不能使用多账号。',
+      'config-unavailable': '无法读取 Codex 有效配置，请稍后刷新重试。',
+      'environment-timeout': '检查 Codex 多账号环境超时，请稍后刷新重试。',
+    };
+    const unavailable = (reason, message = messages[reason]) => ({ supported: false, reason, message });
+    const client = host.appServerClient;
+    if (vscode.env?.remoteName === 'wsl' || client?.runsInsideWsl === true) return unavailable('wsl');
+    if (vscode.env?.remoteName) return unavailable('remote');
+    // 已审计官方 ExecutionHost：isLocal 是布尔属性，WSL 另有 runsInsideWsl 标记。
+    if (client?.isLocal !== true || client.hostConfig?.kind !== 'local'
+      || client.hostConfig.id !== 'local' || client.runsInsideWsl !== false
+      || typeof client.codexHome !== 'function' || typeof client.platformPath !== 'function') return unavailable('local-host-unavailable');
+    let timer;
+    let phase = 'home-unavailable';
+    try {
+      const [home, platformPath] = await Promise.race([
+        Promise.all([client.codexHome(), client.platformPath()]),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(failure('RPC_TIMEOUT')), timeoutMs); }),
+      ]);
+      if (disposed || typeof home !== 'string' || home.length > 4096 || /[\x00-\x1f]/.test(home)
+        || !['/', '\\'].includes(platformPath?.sep) || typeof platformPath.isAbsolute !== 'function'
+        || !platformPath.isAbsolute(home) || typeof platformPath.normalize !== 'function'
+        || platformPath.normalize(home) !== home || home.startsWith('\\\\') || home.startsWith('//')
+        || home === platformPath.parse(home).root) return unavailable('home-unavailable');
+      // Read effective settings (including managed/CLI overrides); never return arbitrary configuration.
+      phase = 'config-unavailable';
+      const effective = await rpc('config/read', { includeLayers: false }, true);
+      const config = effective?.config;
+      if (disposed || !config) return unavailable('config-unavailable');
+      if (config.cli_auth_credentials_store !== 'file') {
+        const storageMessages = {
+          keyring: '当前使用系统钥匙串保存登录，多账号暂不支持钥匙串缓存。',
+          auto: '当前登录缓存使用自动选择模式，无法保证账号保存在文件中，暂不能使用多账号。',
+          ephemeral: '当前登录仅保存在内存中，无法保存和切换多账号。',
+        };
+        const storage = config.cli_auth_credentials_store;
+        return unavailable('auth-storage-unsupported', typeof storage === 'string' && Object.hasOwn(storageMessages, storage)
+          ? storageMessages[storage] : messages['auth-storage-unsupported']);
+      }
+      if (config.forced_login_method != null && config.forced_login_method !== 'chatgpt') return unavailable('login-method-restricted');
+      const forced = config.forced_chatgpt_workspace_id;
+      const forcedWorkspaceIds = forced == null ? [] : typeof forced === 'string' ? [forced] : forced;
+      if (!Array.isArray(forcedWorkspaceIds) || forcedWorkspaceIds.length > 100
+        || !forcedWorkspaceIds.every(id => validId(id))) return unavailable('workspace-restriction-invalid');
+      return { supported: true, home, authStorage: 'file', forcedWorkspaceIds: [...new Set(forcedWorkspaceIds)] };
+    } catch (error) { return unavailable(error?.code === 'CODEX_MULTI_TAB_RPC_TIMEOUT' ? 'environment-timeout' : phase); }
+    finally { clearTimeout(timer); }
+  }
+
+  async function accountSwitchPreflight() {
+    const unknown = { safe: false, message: '无法确认所有 Codex 会话均已停止，请稍后重试。' };
+    const deadline = Date.now() + timeoutMs;
+    const activityRevision = accountActivityRevision;
+    const call = (method, params) => {
+      const remaining = deadline - Date.now();
+      if (disposed || remaining <= 0) throw failure('RPC_TIMEOUT');
+      return rpc(method, params, true, remaining);
+    };
+    try {
+      const cursors = new Set(), ids = new Set();
+      let cursor;
+      for (let page = 0; page < 100; page++) {
+        const result = await call('thread/loaded/list', { limit: 100, ...(cursor ? { cursor } : {}) });
+        if (!Array.isArray(result?.data) || !result.data.every(validId)) return unknown;
+        for (const id of result.data) ids.add(id);
+        if (ids.size > 10000) return unknown;
+        if (result.nextCursor == null) break;
+        if (typeof result.nextCursor !== 'string' || !result.nextCursor || result.nextCursor.length > 8192
+          || cursors.has(result.nextCursor) || page === 99) return unknown;
+        cursor = result.nextCursor;
+        cursors.add(cursor);
+      }
+      // 扫描连接中全部已加载会话，不限制项目、可见面板或侧栏历史页。
+      const allIds = [...ids];
+      for (let index = 0; index < allIds.length; index += 10) {
+        const batch = allIds.slice(index, index + 10);
+        const results = await Promise.all(batch.map(threadId => call('thread/read', { threadId, includeTurns: false })));
+        for (let item = 0; item < results.length; item++) {
+          const thread = results[item]?.thread;
+          if (thread?.id !== batch[item]) return unknown;
+          if (thread.status?.type === 'active') return { safe: false, message: '仍有 Codex 会话正在运行，请先停止后再切换账号。' };
+          if (!['idle', 'notLoaded'].includes(thread.status?.type)) return unknown;
+        }
+      }
+      return disposed || accountActivityRevision !== activityRevision ? unknown : { safe: true };
+    } catch { return unknown; }
   }
 
   /** 初次补读元数据，此后复用官方通知；不拉取消息正文，也不每两秒扫描全部历史。 */
@@ -210,7 +337,42 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
       if (disposed) throw failure('DISPOSED');
       if (!request || typeof request !== 'object' || Array.isArray(request)) throw failure('INVALID_REQUEST');
       switch (request.action) {
-        case 'status': return { version: 1, capabilities: { runtime: true, stop: true } };
+        case 'status': return { version: 1, capabilities: { runtime: true, stop: true, accounts: true } };
+        case 'accountEnvironment': return accountEnvironment();
+        case 'accountSwitchPreflight': return accountSwitchPreflight();
+        case 'accountLogin': {
+          if (accountLoginStarting || !((await accountEnvironment()).supported)) throw failure('UNSUPPORTED_METHOD');
+          if (accountLoginStarting) throw failure('INVALID_REQUEST');
+          accountLoginStarting = true;
+          try {
+            const result = await rpc('account/login/start', { type: 'chatgpt' }, true);
+            if (result?.type !== 'chatgpt' || !validId(result.loginId)) throw failure('RPC_FAILED');
+            let url;
+            try { url = new URL(result.authUrl); } catch { throw failure('RPC_FAILED'); }
+            if (typeof result.authUrl !== 'string' || result.authUrl.length > 16384 || url.protocol !== 'https:'
+              || url.hostname !== 'auth.openai.com' || url.username || url.password || (url.port && url.port !== '443')) throw failure('RPC_FAILED');
+            if (!accountLogins.has(result.loginId)) rememberLogin(result.loginId, 'pending');
+            return { loginId: result.loginId, authUrl: result.authUrl };
+          } finally { accountLoginStarting = false; }
+        }
+        case 'cancelAccountLogin': {
+          if (!validId(request.loginId)) throw failure('INVALID_REQUEST');
+          if (!accountLogins.has(request.loginId)) throw failure('INVALID_REQUEST');
+          const result = await rpc('account/login/cancel', { loginId: request.loginId }, true);
+          if (!['canceled', 'notFound'].includes(result?.status)) throw failure('RPC_FAILED');
+          rememberLogin(request.loginId, 'failed');
+          return { status: result.status };
+        }
+        case 'accountLoginStatus': {
+          if (!validId(request.loginId)) throw failure('INVALID_REQUEST');
+          const login = accountLogins.get(request.loginId);
+          if (!login || login.expiresAt <= Date.now()) {
+            accountLogins.delete(request.loginId);
+            return { status: 'unknown' };
+          }
+          return { status: login.status, ...(login.status === 'success' ? { success: true }
+            : login.status === 'failed' ? { success: false, message: '账号登录未完成，请重新登录。' } : {}) };
+        }
         case 'runtime': {
           if (!Array.isArray(request.threadIds) || request.threadIds.length > 200 || !request.threadIds.every(validId)) throw failure('INVALID_REQUEST');
           const ids = [...new Set(request.threadIds)];
@@ -298,6 +460,7 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
       stopping.clear();
       for (const ticket of stopTickets.values()) clearTimeout(ticket.timer);
       stopTickets.clear();
+      accountLogins.clear();
       if (host.codexMultiTabSidebarBridge === bridge) delete host.codexMultiTabSidebarBridge;
     },
   };

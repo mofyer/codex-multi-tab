@@ -65,6 +65,11 @@ function createSidebarViewProvider(vscode, context, onMessage) {
         <div class="account-heading"><div class="account-identity"><strong id="account-name">正在读取账号…</strong><span id="account-plan">正在读取套餐…</span></div><button id="refresh" class="icon-button" title="刷新账号、用量与会话" aria-label="刷新账号、用量与会话">↻</button></div>
         <p id="account-expiry" class="notice" hidden></p>
         <p id="account-note" class="notice" hidden></p>
+        <p id="runtime-version" class="notice" hidden></p>
+        <div class="account-actions"><button id="save-account" class="account-button" disabled>保存当前账号</button><button id="add-account" class="account-button" disabled>＋ 添加账号</button><button id="cancel-account-login" class="account-button" hidden>取消登录</button></div>
+        <p id="accounts-message" class="notice" role="status" aria-live="polite" hidden></p>
+        <details id="saved-accounts" class="saved-accounts"><summary id="saved-accounts-heading">已保存账号</summary><div id="account-list"></div></details>
+        <p id="accounts-scope" class="notice">切换将重载当前窗口，请先保存草稿并结束任务。所有 Codex 标签页及共享此登录的窗口都会受影响。</p>
         <div id="usage"></div>
         <section class="credits-section" aria-labelledby="credits-heading"><h2 id="credits-heading">额度重置卡 <span id="credits-count" class="credits-count" aria-live="polite">—</span></h2><div id="credits"></div></section>
       </div>

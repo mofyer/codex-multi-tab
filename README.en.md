@@ -2,6 +2,8 @@
 
 # Codex Multi Tab
 
+Version 0.5.0 adds saved ChatGPT accounts: save the current account, add another through official browser login, rename or remove saved entries, and switch with a window reload. Saved credentials use VS Code SecretStorage. This first implementation supports verified local, file-based ChatGPT authentication only. Keyring, remote, WSL, and API key modes are not supported. End tasks and save drafts before switching: clients sharing the same CODEX_HOME share the login cache. Expired credentials may require signing in again. See [design and verification scope](docs/multi-account.md).
+
 <img src="assets/icon.png" alt="Codex Multi Tab icon" width="96" height="96">
 
 Open multiple independent Codex tabs in VS Code, manage conversations for your current project, and view your official account and usage in the sidebar.
@@ -64,7 +66,7 @@ GPT-5.3 usage is collapsed by default; click **显示更多** (show more) to exp
 
 Native UI enhancements and sidebar data access depend on internal interfaces and small patches to the official extension's assets. This extension validates audited files, retains original backups, and checks compatibility at startup and when the official extension changes. **Automatic compatibility with every future Codex update is not guaranteed.**
 
-- Regression verification for **0.4.4** covers the complete assets of official build **26.5908.31748 on macOS ARM64**. For **26.908.40401**, this verification round covered only transformations of cached scripts; two tests requiring the complete installation package were explicitly skipped. Windows, Linux, and Intel Macs have not been verified, and native enhancement support is not promised on those platforms.
+- Regression verification for **0.5.2** covers the complete assets of official build **26.5908.31748 on macOS ARM64**. For **26.908.40401**, this verification round covered only transformations of cached scripts; two tests requiring the complete installation package were explicitly skipped. Windows, Linux, and Intel Macs have not been verified, and native enhancement support is not promised on those platforms.
 - A changed release version can reuse a compatibility profile if the audited asset bytes are identical. If file hashes or internal structures change, modification is refused and an adaptation notice is shown.
 - Basic tab creation also depends on an internal Codex URI, which may require adaptation if it changes. When the bridge is unavailable, the sidebar displays a compatibility notice and retains the new-tab entry point.
 - Updating Codex Multi Tab does not overwrite original backups stored under its VS Code `globalStorage/patch-backups/` directory. **Disabling or uninstalling this extension does not automatically restore modified Codex files.** See the restoration instructions below.
@@ -118,7 +120,7 @@ On macOS, the default storage root is `~/Library/Application Support/Code/User/g
 npm run check
 npm test
 npm run package
-code --install-extension dist/codex-multi-tab-0.4.4-mofyer.vsix
+code --install-extension dist/codex-multi-tab-0.5.2-mofyer.vsix --force --do-not-sync
 ```
 
 Tests cover tab isolation, conversation management, runtime status and stopping, compatibility detection, hash validation, rollback after failed application, and byte-for-byte restoration. Tests that require an official installation package are explicitly marked as skipped when that package is unavailable.
