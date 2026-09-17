@@ -35,7 +35,14 @@ function setup({ missing = false, activationError, openError } = {}) {
         if (openError) throw openError;
       },
     },
-    window: { async showErrorMessage(message) { errors.push(message); } },
+    window: {
+      async showErrorMessage(message) { errors.push(message); },
+      registerWebviewViewProvider(id, provider) {
+        assert.equal(id, 'codexMultiTab.sidebar');
+        assert.equal(typeof provider.resolveWebviewView, 'function');
+        return { dispose() {} };
+      },
+    },
   };
   const originalLoad = Module._load;
   const context = { subscriptions: [], globalStorageUri: { fsPath: '/test/global-storage' } };

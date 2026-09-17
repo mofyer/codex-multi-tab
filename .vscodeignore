@@ -3,3 +3,5 @@ test/**
 node_modules/**
 backups/**
 VERIFICATION.md
+[Cc][Ll][Aa][Uu][Dd][Ee].md
+package-lock.json

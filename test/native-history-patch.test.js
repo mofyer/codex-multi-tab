@@ -176,6 +176,14 @@ function originalAsset(root, entry) {
       if (hash(original) === entry.originalHash) return original.toString('utf8');
     }
   }
+  // 发行缓存是安装前的真实原件；仅在审计哈希一致时采用，不能用重建夹具替代。
+  const version = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+  const cachedVsix = path.join(os.homedir(), 'Library/Application Support/Code/CachedExtensionVSIXs', `openai.chatgpt-${version}-darwin-arm64`);
+  if (fs.existsSync(cachedVsix)) {
+    const original = spawnSync('unzip', ['-p', cachedVsix, `extension/${entry.file}`], { maxBuffer: 30 * 1024 * 1024 });
+    assert.equal(original.status, 0, original.stderr?.toString());
+    if (hash(original.stdout) === entry.originalHash) return original.stdout.toString('utf8');
+  }
   throw new Error(`找不到已校验原件：${entry.file}`);
 }
 

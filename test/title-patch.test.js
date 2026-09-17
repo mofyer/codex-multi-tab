@@ -167,6 +167,13 @@ for (const [version, asset] of Object.entries(versions)) {
         || path.join(__dirname, '..', 'backups', backupName);
       const manifestFile = path.join(backup, 'manifest.json');
       let bytes = fs.readFileSync(path.join(installed, file));
+      // VS Code 清理过全量补丁备份时，从发行 VSIX 缓存取原字节，随后仍由补丁哈希硬门验证。
+      const cachedVsix = path.join(os.homedir(), 'Library/Application Support/Code/CachedExtensionVSIXs', `openai.chatgpt-${version}-darwin-arm64`);
+      if (file !== 'package.json' && fs.existsSync(cachedVsix)) {
+        const original = spawnSync('unzip', ['-p', cachedVsix, `extension/${file}`], { maxBuffer: 30 * 1024 * 1024 });
+        assert.equal(original.status, 0, original.stderr?.toString());
+        bytes = original.stdout;
+      }
       if (file !== 'package.json' && fs.existsSync(manifestFile)) {
         const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
         assert.equal(manifest.root, fs.realpathSync(installed));
@@ -238,6 +245,24 @@ for (const [version, asset] of Object.entries(versions)) {
     assert.throws(() => patchExtension(root, 'restore', backups), /拒绝覆盖/);
     assert.equal(fs.readFileSync(host, 'utf8').endsWith('// other edit'), true);
     fs.writeFileSync(host, patched);
+    // 原四文件增强升级为侧栏桥：旧清单仍可恢复，不能误报新版已应用。
+    const oldFourDirectory = path.join(backups, fs.readdirSync(backups)[0]);
+    const oldFourManifestPath = path.join(oldFourDirectory, 'manifest.json');
+    const oldFourManifest = JSON.parse(fs.readFileSync(oldFourManifestPath, 'utf8'));
+    for (const patch of nativePatches) {
+      let source = originals.get(patch.file).toString();
+      if (patch.file === 'out/extension.js') source = transformHost(source);
+      if (patch.file === `webview/assets/${asset}`) source = transformWebview(source, api);
+      const oldBytes = Buffer.from(patch.transform(source));
+      fs.writeFileSync(path.join(root, patch.file), oldBytes);
+      oldFourManifest.files.find(entry => entry.file === patch.file).patchedHash = crypto.createHash('sha256').update(oldBytes).digest('hex');
+    }
+    fs.writeFileSync(oldFourManifestPath, JSON.stringify(oldFourManifest));
+    assert.throws(() => patchExtension(root, 'dry-run', backups), error => error.code === 'CODEX_MULTI_TAB_REAPPLY_REQUIRED');
+    assert.throws(() => patchExtension(root, 'apply', backups), error => error.code === 'CODEX_MULTI_TAB_REAPPLY_REQUIRED');
+    assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
+    for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes);
+    assert.equal(patchExtension(root, 'apply', backups).status, 'applied');
     // 模拟旧标题补丁与其真实清单：新版必须拒绝假报已应用，仍允许恢复旧原件。
     const backupDirectory = path.join(backups, fs.readdirSync(backups)[0]);
     const manifestPath = path.join(backupDirectory, 'manifest.json');

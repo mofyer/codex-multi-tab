@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const PATCH_VERSION = require('./package.json').version;
 const { getNativePatchFiles, getNativeDependencies } = require('./native-history-patch');
+const { transformSidebarHost, transformSidebarWebview } = require('./sidebar-bridge-patch');
 const HOST_ANCHOR = 'case"navigate-in-new-editor-tab":{let n=pI(r.path);';
 const PROFILES = {
   '26.5908.31748': {
@@ -160,8 +161,8 @@ function patchExtensionUnlocked(directory, action, backupRoot) {
     }
   }
   const patches = [
-    { file: 'out/extension.js', originalHash: HOST_HASH, transform: transformHost },
-    { file: profile.asset, originalHash: profile.webHash, transform: source => transformWebview(source, profile.api) },
+    { file: 'out/extension.js', originalHash: HOST_HASH, transform: source => transformSidebarHost(transformHost(source)) },
+    { file: profile.asset, originalHash: profile.webHash, transform: source => transformSidebarWebview(transformWebview(source, profile.api), profileVersion) },
   ];
   for (const native of getNativePatchFiles(profileVersion)) {
     const existing = patches.find(patch => patch.file === native.file);
