@@ -5,3 +5,7 @@ backups/**
 VERIFICATION.md
 [Cc][Ll][Aa][Uu][Dd][Ee].md
 package-lock.json
+dist/**
+docs/**
+scripts/**
+.gitignore

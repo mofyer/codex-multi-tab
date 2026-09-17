@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { createSidebarController, normalizeLimits, isWorkspacePath } = require('../sidebar-controller');
+const { createSidebarController, normalizeLimits, isWorkspacePath } = require('../src/sidebar/sidebar-controller');
 const defer = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const thread = (id, name = id, cwd = '/project') => ({ id, name, preview: '', updatedAt: 100, cwd });
 const tick = () => new Promise(resolve => setImmediate(resolve));

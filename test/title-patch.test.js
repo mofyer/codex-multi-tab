@@ -8,8 +8,36 @@ const path = require('node:path');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
-const { patchExtension, transformHost, transformWebview, updatePanelTitle, observeTitle, waitForOnboardingState } = require('../title-patch');
-const { getNativePatchFiles, getNativeDependencies } = require('../native-history-patch');
+const { patchExtension, transformHost, transformWebview, updatePanelTitle, observeTitle, waitForOnboardingState } = require('../src/compatibility/title-patch');
+const { getNativePatchFiles, getNativeDependencies } = require('../src/compatibility/native-history-patch');
+
+test('旧补丁入口与源码入口共享 API，CLI 默认备份保留在扩展根目录', t => {
+  assert.equal(require('../title-patch'), require('../src/compatibility/title-patch'));
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-multi-tab-layout-'));
+  t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+  const root = path.join(temporary, 'helper');
+  fs.mkdirSync(root);
+  fs.cpSync(path.join(__dirname, '../src/compatibility'), path.join(root, 'src/compatibility'), { recursive: true });
+  for (const file of ['package.json', 'title-patch.js']) fs.copyFileSync(path.join(__dirname, '..', file), path.join(root, file));
+  const official = path.join(temporary, 'unsupported-official');
+  fs.mkdirSync(official);
+  fs.writeFileSync(path.join(official, 'package.json'), JSON.stringify({ version: '0.0.0' }));
+  let previous;
+  for (const entry of ['title-patch.js', 'src/compatibility/title-patch.js']) {
+    const usage = spawnSync(process.execPath, [path.join(root, entry)], { cwd: temporary, encoding: 'utf8' });
+    assert.equal(usage.status, 1);
+    assert.match(usage.stderr, /用法：node title-patch.js/);
+    const result = spawnSync(process.execPath, [path.join(root, entry), 'apply', official], { cwd: temporary, encoding: 'utf8' });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /不支持此官方扩展，拒绝修改/);
+    if (previous) assert.equal(result.stderr, previous.stderr);
+    previous = result;
+    assert.deepEqual(fs.readdirSync(path.join(root, 'backups')), []);
+    assert.equal(fs.existsSync(path.join(root, 'src/compatibility/backups')), false);
+    assert.equal(fs.existsSync(path.join(temporary, 'backups')), false);
+    fs.rmdirSync(path.join(root, 'backups'));
+  }
+});
 
 const versions = {
   '26.5908.31748': 'app-initial-972655adec02.js',

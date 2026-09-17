@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { createCompatibilityManager } = require('../compatibility-manager');
+const { createCompatibilityManager } = require('../src/compatibility/compatibility-manager');
 
 function setup(patcher, initial = { extensionPath: '/official/v1', packageJSON: { version: '1' } }) {
   let official = initial;

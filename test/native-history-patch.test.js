@@ -8,7 +8,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const vm = require('node:vm');
 const { spawnSync } = require('node:child_process');
-const { getNativePatchFiles, isHelperDocument, nativePinnedThreads, navigateHistoryInPlace, partitionNativeHistory } = require('../native-history-patch');
+const { getNativePatchFiles, isHelperDocument, nativePinnedThreads, navigateHistoryInPlace, partitionNativeHistory } = require('../src/compatibility/native-history-patch');
 
 const documentFor = route => ({ querySelector: () => route == null ? null : { content: route } });
 

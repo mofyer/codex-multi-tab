@@ -32,14 +32,14 @@ function createSidebarViewProvider(vscode, context, onMessage) {
       clearView();
       currentView = view;
       const webview = view.webview;
-      const assets = vscode.Uri.joinPath(context.extensionUri, 'assets');
-      webview.options = { enableScripts: true, localResourceRoots: [assets] };
+      const media = vscode.Uri.joinPath(context.extensionUri, 'media', 'sidebar');
+      webview.options = { enableScripts: true, localResourceRoots: [media] };
       const nonce = randomBytes(24).toString('base64');
       const escape = (value) => String(value).replace(/[&<>"']/g, (character) => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
       })[character]);
-      const script = escape(webview.asWebviewUri(vscode.Uri.joinPath(assets, 'sidebar.js')));
-      const style = escape(webview.asWebviewUri(vscode.Uri.joinPath(assets, 'sidebar.css')));
+      const script = escape(webview.asWebviewUri(vscode.Uri.joinPath(media, 'sidebar.js')));
+      const style = escape(webview.asWebviewUri(vscode.Uri.joinPath(media, 'sidebar.css')));
       viewDisposables.push(webview.onDidReceiveMessage((message) => {
         if (!message || typeof message !== 'object' || Array.isArray(message)) return;
         if (message.type === 'ready') void sendState();

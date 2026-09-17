@@ -113,8 +113,10 @@ macOS 默认存储根目录为 `~/Library/Application Support/Code/User/globalSt
 ```sh
 npm run check
 npm test
-npx @vscode/vsce package
-code --install-extension codex-multi-tab-0.4.4.vsix
+npm run package
+code --install-extension dist/codex-multi-tab-0.4.4-mofyer.vsix
 ```
 
 测试覆盖标签隔离、会话管理、运行态与停止、兼容检测、哈希校验、失败回滚和逐字节恢复。缺少对应官方安装包时，相关实包测试会明确标记跳过。
+
+源码位于 `src/`，侧栏页面资源位于 `media/sidebar/`，图标和市场截图位于 `assets/`。打包产物统一输出到 `dist/`；旧恢复命令及根目录 `backups/` 路径保持兼容。目录职责、开发流程与打包边界见 [开发指南](https://github.com/mofyer/codex-multi-tab/blob/main/docs/development.md)。打包使用 Node.js 22 或更高版本，首次运行会下载固定版本的 VSCE；`npm run package` 会先执行语法检查和测试。

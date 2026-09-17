@@ -2,8 +2,9 @@
 
 const assert = require('node:assert/strict');
 const Module = require('node:module');
+const path = require('node:path');
 const { test } = require('node:test');
-const { activate } = require('../extension');
+const { activate } = require(path.resolve(__dirname, '..', require('../package.json').main));
 
 /** 在注册时注入 VS Code 替身，回调保留各测试独立的接口实例。 */
 function setup({ missing = false, activationError, openError } = {}) {

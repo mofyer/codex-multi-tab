@@ -5,8 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const { spawnSync } = require('node:child_process');
-const { registerSidebarBridge, reportSidebarRoute, transformSidebarHost, transformSidebarWebview } = require('../sidebar-bridge-patch');
-const { nativePinnedThreads } = require('../native-history-patch');
+const { registerSidebarBridge, reportSidebarRoute, transformSidebarHost, transformSidebarWebview } = require('../src/compatibility/sidebar-bridge-patch');
+const { nativePinnedThreads } = require('../src/compatibility/native-history-patch');
 
 function fixture(t, timeout = 1000, clock = Date) {
   const sent = [], abandoned = [], subscriptions = [];

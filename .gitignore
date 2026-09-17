@@ -1,5 +1,7 @@
 node_modules/
 backups/
+dist/
+docs/local/
 *.vsix
 VERIFICATION.md
 [Cc][Ll][Aa][Uu][Dd][Ee].md

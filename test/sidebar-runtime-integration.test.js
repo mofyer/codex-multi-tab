@@ -1,8 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createSidebarController } = require('../sidebar-controller');
-const { registerSidebarBridge } = require('../sidebar-bridge-patch');
+const { createSidebarController } = require('../src/sidebar/sidebar-controller');
+const { registerSidebarBridge } = require('../src/compatibility/sidebar-bridge-patch');
 
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 

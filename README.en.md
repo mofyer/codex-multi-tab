@@ -117,8 +117,10 @@ On macOS, the default storage root is `~/Library/Application Support/Code/User/g
 ```sh
 npm run check
 npm test
-npx @vscode/vsce package
-code --install-extension codex-multi-tab-0.4.4.vsix
+npm run package
+code --install-extension dist/codex-multi-tab-0.4.4-mofyer.vsix
 ```
 
 Tests cover tab isolation, conversation management, runtime status and stopping, compatibility detection, hash validation, rollback after failed application, and byte-for-byte restoration. Tests that require an official installation package are explicitly marked as skipped when that package is unavailable.
+
+Extension code lives in `src/`, sidebar page resources in `media/sidebar/`, and icons and Marketplace screenshots in `assets/`. Packages are written to `dist/`. Existing restoration commands and the root `backups/` location remain supported. See the [development guide](https://github.com/mofyer/codex-multi-tab/blob/main/docs/development.md) for directory responsibilities and packaging boundaries. Packaging requires Node.js 22 or newer and downloads a pinned VSCE version on first use; `npm run package` runs syntax checks and tests before packaging.

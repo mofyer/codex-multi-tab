@@ -5,6 +5,33 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
+const { createSidebarViewProvider } = require('../src/sidebar/sidebar-view');
+
+test('侧栏引用的脚本和样式真实存在，且资源授权仅覆盖侧栏目录', () => {
+  const extensionUri = path.resolve(__dirname, '..');
+  const resources = [];
+  const webview = {
+    cspSource: 'vscode-webview:',
+    asWebviewUri(uri) { resources.push(uri); return `vscode-webview:${uri}`; },
+    onDidReceiveMessage() { return { dispose() {} }; },
+  };
+  const provider = createSidebarViewProvider({ Uri: { joinPath: path.join } }, { extensionUri }, () => {});
+  try {
+    provider.resolveWebviewView({ webview, onDidDispose() { return { dispose() {} }; } });
+    assert.equal(webview.options.enableScripts, true);
+    assert.deepEqual(webview.options.localResourceRoots, [path.join(extensionUri, 'media/sidebar')]);
+    assert.equal(resources.length, 2);
+    for (const resource of resources) {
+      assert.equal(fs.statSync(resource).isFile(), true);
+      assert.equal(path.dirname(resource), webview.options.localResourceRoots[0]);
+      assert.ok(webview.html.includes(`vscode-webview:${resource}`));
+    }
+    assert.match(webview.html, /Content-Security-Policy/);
+    assert.match(webview.html, /script-src 'nonce-/);
+  } finally {
+    provider.dispose();
+  }
+});
 
 // 执行真实侧栏脚本，只替换浏览器 DOM 和 VS Code 消息边界。
 function sidebar() {
@@ -48,7 +75,7 @@ function sidebar() {
     addEventListener: (type, handler) => { (listeners[`document:${type}`] ||= []).push(handler); },
   };
   const window = { innerWidth: 220, innerHeight: 500, scrollY: 0, scrollTo() {}, addEventListener: (type, handler) => { (listeners[type] ||= []).push(handler); } };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../assets/sidebar.js'), 'utf8'), {
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../media/sidebar/sidebar.js'), 'utf8'), {
     document, window, Date, console,
     acquireVsCodeApi: () => ({ getState: () => ({}), setState() {}, postMessage: (message) => messages.push(JSON.parse(JSON.stringify(message))) }),
     setInterval() {}, clearInterval() {}, setTimeout() {}, clearTimeout() {}, requestAnimationFrame: (callback) => callback(),

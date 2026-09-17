@@ -36,7 +36,7 @@
     "onStartupFinished",
     "onView:codexMultiTab.sidebar"
   ],
-  "main": "./extension.js",
+  "main": "./src/extension.js",
   "contributes": {
     "commands": [
       {
@@ -95,10 +95,11 @@
     }
   },
   "scripts": {
-    "check": "node --check extension.js && node --check title-patch.js && node --check native-history-patch.js && node --check compatibility-manager.js && node --check sidebar-view.js && node --check sidebar-controller.js && node --check sidebar-bridge-patch.js && node --check assets/sidebar.js",
+    "check": "node scripts/check.js",
     "test": "node --test test/*.test.js",
     "title:check": "node title-patch.js dry-run",
     "title:apply": "node title-patch.js apply",
-    "title:restore": "node title-patch.js restore"
+    "title:restore": "node title-patch.js restore",
+    "package": "npm run check && npm test && node scripts/package.js"
   }
 }
