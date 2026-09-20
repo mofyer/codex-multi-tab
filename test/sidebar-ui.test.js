@@ -232,6 +232,31 @@ test('账号操作中及登录中禁用账号操作和额度重置，登录中�
   }
 });
 
+test('重置结束的宿主状态立即清除处理中并恢复账号操作和刷新', () => {
+  const ui = sidebar();
+  const extra = { account: { status: 'ready' }, accounts: accountsState(),
+    credits: { status: 'ready', items: [{ id: 'card', available: true }] } };
+  ui.state([], { reset: true }, extra);
+  ui.document.querySelectorAll('.reset-credit')[0].emit('click');
+  assert.deepEqual(ui.messages.at(-1), { type: 'resetCredit', creditId: 'card' });
+  assert.equal(ui.document.querySelectorAll('.reset-credit')[0].textContent, '处理中');
+  assert.equal(ui.ids.get('save-account').disabled, true);
+  assert.equal(ui.ids.get('add-account').disabled, true);
+  ui.state([], { reset: true }, { ...extra, credits: { ...extra.credits, busyId: 'card' } });
+  assert.equal(ui.document.querySelectorAll('.reset-credit')[0].textContent, '处理中');
+  assert.equal(ui.document.querySelectorAll('.saved-account')[1].querySelector('button').disabled, true);
+  ui.state([], { reset: true }, { ...extra, credits: { status: 'ready', items: [{ id: 'card', available: false }] } });
+  assert.equal(ui.document.querySelectorAll('.reset-credit')[0].textContent, '重置');
+  assert.equal(ui.document.querySelectorAll('.reset-credit')[0].disabled, true, '已消费卡不能再消费');
+  assert.equal(ui.ids.get('save-account').disabled, false);
+  assert.equal(ui.ids.get('add-account').disabled, false);
+  assert.equal(ui.document.querySelectorAll('.saved-account')[1].querySelector('button').disabled, false);
+  assert.equal(ui.ids.get('refresh').disabled, false);
+  ui.ids.get('refresh').emit('click');
+  assert.deepEqual(ui.messages.at(-1), { type: 'refresh' });
+  assert.equal(ui.messages.filter(value => value.type === 'resetCredit').length, 1);
+});
+
 test('不支持和旧版状态隐藏列表并解释原因，未登录仍可添加账号', () => {
   for (const accounts of [undefined, accountsState({ supported: false, message: '当前登录由系统钥匙串管理' })]) {
     const ui = sidebar(); ui.state([], {}, { accounts });

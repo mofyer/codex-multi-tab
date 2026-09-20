@@ -1,7 +1,8 @@
 'use strict';
 
 const nativeFs = require('node:fs/promises');
-const { constants } = require('node:fs');
+const nativeSyncFs = require('node:fs');
+const { constants } = nativeSyncFs;
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 
@@ -92,7 +93,7 @@ function parseAuthConfig(bytes) {
   return result;
 }
 
-function createAccountStore(context, { home, fs = nativeFs, readEnvironment } = {}) {
+function createAccountStore(context, { home, fs = nativeFs, syncFs = nativeSyncFs, readEnvironment } = {}) {
   const validHome = typeof home === 'string' && path.isAbsolute(home) && !home.includes('\0');
   const directory = validHome ? path.resolve(home) : '';
   const authPath = path.join(directory, 'auth.json');
@@ -151,74 +152,101 @@ function createAccountStore(context, { home, fs = nativeFs, readEnvironment } = 
     return { store: config.store, workspaceIds: config.workspaceId ? [config.workspaceId] : [] };
   }
 
-  async function sameLockDirectory(lock) {
-    const current = await fs.lstat(lockPath);
+  function sameLockDirectory(lock) {
+    const current = syncFs.lstatSync(lockPath);
     return current.isDirectory() && !current.isSymbolicLink()
       && current.ino === lock.ino && current.dev === lock.dev;
   }
 
-  async function readLock() {
+  function readLock() {
+    let fd;
     try {
-      const directoryStat = await fs.lstat(lockPath);
+      const directoryStat = syncFs.lstatSync(lockPath);
       if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) throw fail('BUSY');
-      const entries = await fs.readdir(lockPath);
+      const entries = syncFs.readdirSync(lockPath);
       if (entries.length !== 1) throw fail('BUSY');
-      const owner = JSON.parse((await readBounded(path.join(lockPath, entries[0]), false, MAX_LOCK_BYTES)).toString('utf8'));
+      const file = path.join(lockPath, entries[0]);
+      const before = syncFs.lstatSync(file);
+      if (!before.isFile() || before.isSymbolicLink() || before.size > MAX_LOCK_BYTES) throw fail('BUSY');
+      fd = syncFs.openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
+      const opened = syncFs.fstatSync(fd);
+      if (!opened.isFile() || opened.ino !== before.ino || opened.dev !== before.dev || opened.size > MAX_LOCK_BYTES) throw fail('BUSY');
+      const bytes = Buffer.alloc(MAX_LOCK_BYTES + 1);
+      let length = 0;
+      while (length < bytes.length) {
+        const read = syncFs.readSync(fd, bytes, length, bytes.length - length, length);
+        if (!read) break;
+        length += read;
+      }
+      const after = syncFs.fstatSync(fd);
+      if (length > MAX_LOCK_BYTES || length !== after.size || after.size !== opened.size || after.mtimeMs !== opened.mtimeMs) throw fail('BUSY');
+      const owner = JSON.parse(bytes.subarray(0, length).toString('utf8'));
       if (!plain(owner) || Object.keys(owner).sort().join(',') !== 'pid,token'
         || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 || owner.pid > 2147483647
         || typeof owner.token !== 'string' || !LOCK_TOKEN.test(owner.token)
         || entries[0] !== `owner-${owner.token}.json`) throw fail('BUSY');
       const lock = { ...owner, ino: directoryStat.ino, dev: directoryStat.dev };
-      if (!await sameLockDirectory(lock)) throw fail('BUSY');
+      if (!sameLockDirectory(lock)) throw fail('BUSY');
       return lock;
     } catch { throw fail('BUSY'); }
+    finally { if (fd !== undefined) syncFs.closeSync(fd); }
   }
 
-  async function verifyLock(lock) {
-    const current = await readLock();
+  function verifyLock(lock) {
+    const current = readLock();
     if (current.ino !== lock.ino || current.dev !== lock.dev
       || current.token !== lock.token || current.pid !== lock.pid) throw fail('BUSY');
   }
 
-  async function writeLockOwner(lock) {
-    if (!await sameLockDirectory(lock)) throw fail('BUSY');
-    await fs.writeFile(path.join(lockPath, `owner-${lock.token}.json`),
+  function writeLockOwner(lock) {
+    if (!sameLockDirectory(lock)) throw fail('BUSY');
+    syncFs.writeFileSync(path.join(lockPath, `owner-${lock.token}.json`),
       JSON.stringify({ pid: lock.pid, token: lock.token }), { flag: 'wx', mode: 0o600 });
   }
 
-  async function releaseLock(lock) {
-    await verifyLock(lock);
+  function releaseLock(lock) {
+    verifyLock(lock);
     // Only the remover of this unique owner file may remove the directory. A second
     // reaper cannot remove a new owner's file even if the lock path has been reused.
-    await fs.unlink(path.join(lockPath, `owner-${lock.token}.json`));
+    syncFs.unlinkSync(path.join(lockPath, `owner-${lock.token}.json`));
     try {
-      if (!await sameLockDirectory(lock)) throw fail('BUSY');
-      await fs.rmdir(lockPath);
+      if (!sameLockDirectory(lock)) throw fail('BUSY');
+      syncFs.rmdirSync(lockPath);
     } catch (error) {
       // Keep rollback usable when directory removal fails. Never replace another owner.
-      try { await writeLockOwner(lock); } catch { /* Fail closed if ownership changed. */ }
+      try { writeLockOwner(lock); } catch { /* Fail closed if ownership changed. */ }
       throw error;
     }
   }
 
-  async function acquireLock() {
-    try { await fs.mkdir(lockPath, { mode: 0o700 }); }
+  function createLock() {
+    syncFs.mkdirSync(lockPath, { mode: 0o700 });
+    const created = syncFs.lstatSync(lockPath);
+    const lock = { ino: created.ino, dev: created.dev, pid: process.pid, token: randomUUID(), claimed: true, retained: false };
+    try { writeLockOwner(lock); }
+    catch (error) {
+      // Only remove our unchanged empty directory; partial or unknown owner data stays closed.
+      try { if (sameLockDirectory(lock) && syncFs.readdirSync(lockPath).length === 0) syncFs.rmdirSync(lockPath); } catch { /* Preserve uncertain ownership. */ }
+      throw error;
+    }
+    return lock;
+  }
+
+  function acquireLock() {
+    // No await between mkdir and owner creation, or owner removal and rmdir:
+    // a normal extension-host shutdown callback cannot leave an empty lock between them.
+    // SIGKILL or a machine crash can still interrupt a syscall; unknown locks stay closed.
+    try { return createLock(); }
     catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      const previous = await readLock();
+      const previous = readLock();
       try { process.kill(previous.pid, 0); throw fail('BUSY'); }
       catch (probeError) { if (probeError.code !== 'ESRCH') throw fail('BUSY'); }
       try {
-        await releaseLock(previous);
-        await fs.mkdir(lockPath, { mode: 0o700 });
+        releaseLock(previous);
+        return createLock();
       } catch { throw fail('BUSY'); }
     }
-    const created = await fs.lstat(lockPath);
-    const lock = { ino: created.ino, dev: created.dev, pid: process.pid, token: randomUUID(), claimed: true, retained: false };
-    // A crash between mkdir and this write leaves an unowned legacy lock. Such a
-    // lock must be inspected manually; age alone is never sufficient to steal it.
-    await writeLockOwner(lock);
-    return lock;
   }
 
   async function withLock(operation, retainedLock) {

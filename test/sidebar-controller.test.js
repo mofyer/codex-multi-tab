@@ -32,7 +32,7 @@ function fakeTimers() {
 }
 
 /** 所有账号和卡均为协议替身，禁止测试消费真实卡。 */
-function setup({ rpc: customRpc, bridge: customBridge, choice = '消耗重置卡并重置', commands = true, warning, open, input, folders = ['/project'], timers, runtime = false } = {}) {
+function setup({ rpc: customRpc, bridge: customBridge, choice = '消耗重置卡并重置', commands = true, warning, information, errorNotification, open, input, folders = ['/project'], timers, runtime = false } = {}) {
   const calls = [], states = [], notices = [], errors = [], opens = [];
   let workspaceListener, workspaceDisposed = false;
   const makeFolders = values => values.map(value => typeof value === 'string' ? { uri: { scheme: 'file', fsPath: value } } : value);
@@ -67,8 +67,8 @@ function setup({ rpc: customRpc, bridge: customBridge, choice = '消耗重置卡
     },
     window: {
       showWarningMessage: warning || (async () => choice),
-      showInformationMessage: async value => { notices.push(value); },
-      showErrorMessage: async value => { errors.push(value); },
+      showInformationMessage: async value => { notices.push(value); return information?.(value); },
+      showErrorMessage: async value => { errors.push(value); return errorNotification?.(value); },
       showInputBox: input || (async () => '新的名称'),
     },
   };
@@ -206,6 +206,73 @@ test('消费请求超时不自动重试，不显示重置成功', async () => {
   assert.equal(app.calls.filter(call => call.method?.endsWith('/consume')).length, 1);
   assert.ok(app.errors.some(value => value.includes('不会自动重复消费')));
   assert.equal(app.notices.some(value => value.includes('已完成')), false);
+});
+
+test('成功通知未关闭也立即清除处理中并刷新用量，不重复消费', async t => {
+  const notice = defer(); let consumed = false, completed = false;
+  const app = setup({ information: () => notice.promise, rpc: method => {
+    if (method.endsWith('/consume')) { consumed = true; return { outcome: 'reset' }; }
+    if (method === 'account/rateLimits/read' && consumed) return { ...limits([]), rateLimits: { primary: { usedPercent: 0, windowDurationMins: 300 } } };
+  } });
+  t.after(() => app.dispose());
+  await app.handleMessage({ type: 'ready' });
+  const operation = app.handleMessage({ type: 'resetCredit', creditId: card.id }).then(() => { completed = true; });
+  await tick();
+  assert.ok(app.notices.some(value => value.includes('已完成')));
+  assert.equal(completed, true, '通知仍打开时重置操作也应结束');
+  assert.equal(app.state().credits.busyId, undefined);
+  assert.equal(app.state().credits.items.length, 0);
+  assert.equal(app.state().usage.windows[0].usedPercent, 0);
+  const reads = app.calls.filter(call => call.method === 'account/rateLimits/read').length;
+  await app.handleMessage({ type: 'refresh' });
+  assert.equal(app.calls.filter(call => call.method === 'account/rateLimits/read').length, reads + 1);
+  assert.equal(app.calls.filter(call => call.method?.endsWith('/consume')).length, 1);
+  await operation;
+});
+
+test('失败通知未关闭不阻塞清理和只读刷新，仍不重复消费', async t => {
+  const notice = defer(); let completed = false;
+  const app = setup({ errorNotification: () => notice.promise, rpc: method => method.endsWith('/consume') ? Promise.reject(new Error('timeout')) : undefined });
+  t.after(() => app.dispose());
+  await app.handleMessage({ type: 'ready' });
+  const operation = app.handleMessage({ type: 'resetCredit', creditId: card.id }).then(() => { completed = true; });
+  await tick();
+  assert.ok(app.errors.some(value => value.includes('不会自动重复消费')));
+  assert.equal(completed, true, '错误通知不能保留重置锁');
+  assert.equal(app.state().credits.busyId, undefined);
+  const reads = app.calls.filter(call => call.method === 'account/rateLimits/read').length;
+  await app.handleMessage({ type: 'refresh' });
+  assert.equal(app.calls.filter(call => call.method === 'account/rateLimits/read').length, reads + 1);
+  assert.equal(app.calls.filter(call => call.method?.endsWith('/consume')).length, 1);
+  await operation;
+});
+
+test('身份核对提示未关闭也释放重置锁且不发起消费', async t => {
+  const notice = defer(); let completed = false;
+  const app = setup({ information: () => notice.promise, rpc: method => {
+    if (method === 'account/rateLimits/read') return { ...limits([card]), accountId: null };
+    if (method === 'account/read') return { account: { type: 'chatgpt', email: null } };
+  } });
+  t.after(() => app.dispose());
+  await app.handleMessage({ type: 'ready' });
+  const operation = app.handleMessage({ type: 'resetCredit', creditId: card.id }).then(() => { completed = true; });
+  await tick();
+  assert.ok(app.notices.some(value => value.includes('账号身份')));
+  assert.equal(completed, true);
+  assert.equal(app.state().credits.busyId, undefined);
+  assert.equal(app.calls.some(call => call.method?.endsWith('/consume')), false);
+  await operation;
+});
+
+test('通知投递失败不会中断成功重置后的清理和刷新', async t => {
+  const app = setup({ information: () => Promise.reject(new Error('notification unavailable')) });
+  t.after(() => app.dispose());
+  await app.handleMessage({ type: 'ready' });
+  await app.handleMessage({ type: 'resetCredit', creditId: card.id });
+  await tick();
+  assert.equal(app.state().credits.busyId, undefined);
+  assert.equal(app.errors.length, 0);
+  assert.equal(app.calls.filter(call => call.method?.endsWith('/consume')).length, 1);
 });
 
 test('销毁后不发布迟到状态或在确认后消费', async () => {

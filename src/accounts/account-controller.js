@@ -17,6 +17,10 @@ const environmentMessages = {
   CODEX_MULTI_TAB_ACCOUNT_BUSY: '另一个窗口正在管理账号，请稍后刷新；若持续出现，请按多账号说明检查遗留操作锁。',
   CODEX_MULTI_TAB_ACCOUNT_UNSUPPORTED: '本地凭据存储环境无法安全确认，请检查目录或官方凭据存储方式。',
   CODEX_MULTI_TAB_ACCOUNT_STORAGE: '无法访问账号安全存储或本地目录，请检查系统权限后刷新。',
+  CODEX_MULTI_TAB_ACCOUNT_IDENTITY: '当前登录身份已变化或无法核对，请刷新账号后重试。',
+  CODEX_MULTI_TAB_ACCOUNT_CHANGED: '登录文件已被其他操作更新，本次未覆盖，请刷新后重试。',
+  CODEX_MULTI_TAB_ACCOUNT_INVALID_AUTH: '登录凭据格式无法安全识别，请先在官方 Codex 中重新登录。',
+  CODEX_MULTI_TAB_ACCOUNT_NOT_FOUND: '已保存的账号不存在，请刷新账号列表。',
 };
 
 /** Credentials stay in the extension host. The webview receives only an explicit metadata projection. */
@@ -30,7 +34,7 @@ function createAccountController(vscode, context, {
   const snapshot = () => ({ supported, busy, pendingLogin: Boolean(login), message,
     items: items.map(item => ({ id: item.id, email: item.email, label: item.label, planType: item.planType,
       isCurrent: Boolean(account?.accountId && item.accountId === account.accountId && item.email === account.email) })) });
-  const error = value => { if (!disposed) return vscode.window.showErrorMessage(value); };
+  const error = async value => { if (!disposed) return vscode.window.showErrorMessage(value); };
   const current = async () => {
     const value = await bridge({ action: 'rpc', method: 'account/read', params: { refreshToken: false } });
     if (!value || !Object.hasOwn(value, 'account')) throw new Error('account');
@@ -76,7 +80,8 @@ function createAccountController(vscode, context, {
       if (disposed || busy || login || token !== revision) return;
       supported = false;
       items = [];
-      message = `多账号暂不可用：${environmentMessages[cause?.code] || '官方连接检查失败，请刷新或重载窗口后重试。'}`;
+      message = `多账号暂不可用：${Object.hasOwn(environmentMessages, cause?.code)
+        ? environmentMessages[cause.code] : '官方连接检查失败，请刷新或重载窗口后重试。'}`;
     }
     emit();
   }
@@ -245,7 +250,9 @@ function createAccountController(vscode, context, {
           }
         }
       }
-    } catch {
+    } catch (cause) {
+      message = Object.hasOwn(environmentMessages, cause?.code) ? environmentMessages[cause.code]
+        : '账号操作未完成。请确认本地文件式 ChatGPT 登录、系统安全存储和官方连接可用，再刷新重试。';
       if (staged) {
         try { await staged.rollback(); } catch { message = '切换未完成，缓存已发生变化；请在官方 Codex 检查当前登录。'; }
       }
@@ -262,7 +269,8 @@ function createAccountController(vscode, context, {
           }
         }
       }
-      await error('账号操作未完成。请确认本地文件式 ChatGPT 登录、系统安全存储和官方连接可用，再刷新重试。');
+      // VS Code resolves this only when the notification closes; it must not hold busy.
+      void error(message).catch(() => undefined);
     } finally {
       if (!reloading) busy = false;
       emit();

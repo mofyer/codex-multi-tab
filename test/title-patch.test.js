@@ -189,6 +189,7 @@ for (const [version, asset] of Object.entries(versions)) {
       const backupName = `${version}-${rootHash}`;
       const backup = [
         process.env.CODEX_MULTI_TAB_TEST_BACKUP_ROOT && path.join(process.env.CODEX_MULTI_TAB_TEST_BACKUP_ROOT, backupName),
+        path.join(os.homedir(), 'Library/Application Support/Code/User/globalStorage/mofyer.codex-multi-tab/patch-backups', backupName),
         path.join(os.homedir(), 'Library/Application Support/Code/User/globalStorage/yafan-local.codex-multi-tab/patch-backups', backupName),
         path.join(__dirname, '..', 'backups', backupName),
       ].filter(Boolean).find(directory => fs.existsSync(path.join(directory, 'manifest.json')))

@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const syncFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
@@ -185,8 +186,48 @@ for (const termination of ['exit', 'kill']) {
   });
 }
 
+for (const phase of ['mkdir', 'unlink']) {
+  test(`正常宿主退出回调在 ${phase} 后到达时不会留下空锁`, { timeout: 5000 }, async t => {
+    const app = await setup(t);
+    await app.put(auth());
+    const child = spawn(process.execPath, ['-e', `
+      const fs = require('node:fs/promises'), syncFs = require('node:fs'), path = require('node:path');
+      const { createAccountStore } = require(process.argv[1]);
+      const home = process.argv[2], phase = process.argv[3];
+      const stop = () => {
+        syncFs.writeFileSync(path.join(home, 'termination-reached'), phase);
+        setImmediate(() => process.exit(0));
+      };
+      const asyncIo = { ...fs, async [phase](...args) {
+        await fs[phase](...args); stop();
+        await new Promise(resolve => setImmediate(resolve));
+      } };
+      const syncIo = { ...syncFs, [phase + 'Sync'](...args) {
+        const value = syncFs[phase + 'Sync'](...args); stop(); return value;
+      } };
+      const store = createAccountStore({ secrets: { async get() {}, async store() {} } }, { home, fs: asyncIo, syncFs: syncIo });
+      store.saveCurrent({ type: 'chatgpt', email: 'one@example.test', accountId: 'workspace-one' })
+        .catch(() => process.exit(2));
+    `, require.resolve('../src/accounts/account-store'), app.home, phase], { stdio: 'ignore' });
+    const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
+    t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await exited; });
+    assert.deepEqual(await exited, { code: 0, signal: null });
+    assert.equal(await fs.readFile(path.join(app.home, 'termination-reached'), 'utf8'), phase);
+    const lock = path.join(app.home, '.codex-multi-tab-account.lock');
+    if (phase === 'mkdir') {
+      const entries = await fs.readdir(lock);
+      assert.equal(entries.length, 1);
+      const owner = JSON.parse(await fs.readFile(path.join(lock, entries[0]), 'utf8'));
+      assert.equal(owner.pid, child.pid);
+      assert.equal(entries[0], `owner-${owner.token}.json`);
+    } else await assert.rejects(fs.lstat(lock), { code: 'ENOENT' });
+    await app.store.saveCurrent(expected());
+    await assert.rejects(fs.lstat(lock), { code: 'ENOENT' });
+  });
+}
+
 test('只读列表不创建锁，写入者并发时只有一个成功', async t => {
-  const app = await setup(t, { fs: { ...fs, async mkdir() { throw new Error('unexpected writer lock'); } } });
+  const app = await setup(t, { syncFs: { ...syncFs, mkdirSync() { throw new Error('unexpected writer lock'); } } });
   assert.deepEqual(await app.store.list(), []);
   await app.put(auth());
   let release;
@@ -337,11 +378,11 @@ test('释放锁失败仍返回已切换结果，保留可恢复的 rollback 且�
   const profile = await app.store.saveCurrent(expected('two@example.test', 'workspace-two'));
   await app.put(auth());
   let failRelease = true;
-  const failureFs = { ...fs, async rmdir(...args) {
+  const failureFs = { ...syncFs, rmdirSync(...args) {
     if (failRelease) throw Object.assign(new Error('synthetic-secret'), { code: 'EIO' });
-    return fs.rmdir(...args);
+    return syncFs.rmdirSync(...args);
   } };
-  const store = createAccountStore(app.context, { home: app.home, fs: failureFs });
+  const store = createAccountStore(app.context, { home: app.home, syncFs: failureFs });
   const result = await store.stageSwitch(profile.id, expected());
   assert.equal(result.changed, true);
   assert.equal(result.id, profile.id);
@@ -357,13 +398,57 @@ test('释放锁失败仍返回已切换结果，保留可恢复的 rollback 且�
   assert.ok(!(await fs.readdir(app.home)).some(name => name.endsWith('.lock')));
 });
 
+test('创建 owner 失败仅清理原空目录，保留部分 owner 与替换目录', async t => {
+  for (const outcome of ['empty', 'partial', 'replacement']) {
+    const app = await setup(t);
+    await app.put(auth());
+    const lock = path.join(app.home, '.codex-multi-tab-account.lock');
+    const store = createAccountStore(app.context, { home: app.home, syncFs: { ...syncFs,
+      writeFileSync(file, ...args) {
+        if (outcome === 'partial') syncFs.writeFileSync(file, '{partial', args.at(-1));
+        if (outcome === 'replacement') {
+          syncFs.renameSync(lock, path.join(app.home, 'old-lock'));
+          syncFs.mkdirSync(lock);
+        }
+        throw Object.assign(new Error('synthetic-private-error'), { code: 'EIO' });
+      },
+    } });
+    await rejectsCode(store.saveCurrent(expected()), 'STORAGE');
+    assert.deepEqual(await fs.readFile(app.file), auth());
+    assert.equal(app.values.size, 0);
+    if (outcome === 'empty') await assert.rejects(fs.lstat(lock), { code: 'ENOENT' });
+    else {
+      assert.equal((await fs.readdir(lock)).length, outcome === 'partial' ? 1 : 0);
+      await rejectsCode(app.store.saveCurrent(expected()), 'BUSY');
+    }
+  }
+});
+
+test('同步释放删除 owner 后锁目录被替换时不删除新目录或恢复旧 owner', async t => {
+  const app = await setup(t);
+  await app.put(auth());
+  const lock = path.join(app.home, '.codex-multi-tab-account.lock');
+  const store = createAccountStore(app.context, { home: app.home, syncFs: { ...syncFs,
+    unlinkSync(file) {
+      syncFs.unlinkSync(file);
+      syncFs.renameSync(lock, path.join(app.home, 'old-lock'));
+      syncFs.mkdirSync(lock);
+      syncFs.writeFileSync(path.join(lock, 'replacement'), 'keep');
+    },
+  } });
+  const result = await store.saveCurrent(expected());
+  assert.match(result.cleanupWarning, /锁未能释放/);
+  assert.deepEqual(await fs.readdir(lock), ['replacement']);
+  assert.equal(await fs.readFile(path.join(lock, 'replacement'), 'utf8'), 'keep');
+});
+
 test('残留锁被替换时 rollback 不复用他人锁，也不覆盖认证', async t => {
   const app = await setup(t);
   await app.put(auth('two@example.test', 'workspace-two'));
   const profile = await app.store.saveCurrent(expected('two@example.test', 'workspace-two'));
   await app.put(auth());
-  const store = createAccountStore(app.context, { home: app.home, fs: { ...fs,
-    async rmdir() { throw Object.assign(new Error('synthetic'), { code: 'EIO' }); } } });
+  const store = createAccountStore(app.context, { home: app.home, syncFs: { ...syncFs,
+    rmdirSync() { throw Object.assign(new Error('synthetic'), { code: 'EIO' }); } } });
   const result = await store.stageSwitch(profile.id, expected());
   const lock = path.join(app.home, '.codex-multi-tab-account.lock');
   // Preserve the old inode at another path so its number cannot be immediately reused.

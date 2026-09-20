@@ -161,6 +161,7 @@ function originalAsset(root, entry) {
   const hash = value => crypto.createHash('sha256').update(value).digest('hex');
   if (hash(bytes) === entry.originalHash) return bytes.toString('utf8');
   const backupRoots = [process.env.CODEX_MULTI_TAB_TEST_BACKUP_ROOT,
+    path.join(os.homedir(), 'Library/Application Support/Code/User/globalStorage/mofyer.codex-multi-tab/patch-backups'),
     path.join(os.homedir(), 'Library/Application Support/Code/User/globalStorage/yafan-local.codex-multi-tab/patch-backups'),
     path.join(__dirname, '../backups')].filter(Boolean);
   for (const backupRoot of backupRoots) {

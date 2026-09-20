@@ -105,7 +105,12 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
   const emit = () => { if (!disposed) postState(JSON.parse(JSON.stringify(state))); };
   const bridge = request => vscode.commands.executeCommand(BRIDGE, request);
   const rpc = (method, params) => bridge({ action: 'rpc', method, params });
-  const info = message => { if (!disposed) return vscode.window.showInformationMessage(message); };
+  // 非模态通知的 Promise 等待用户关闭，不能让它占住重置锁或阻塞刷新。
+  const info = message => {
+    void Promise.resolve().then(() => {
+      if (!disposed) return vscode.window.showInformationMessage(message);
+    }).catch(() => undefined);
+  };
   const accounts = createAccountController(vscode, context, {
     bridge, timers, storeFactory: accountStoreFactory,
     changed(value) { state.accounts = value; emit(); },
@@ -480,9 +485,9 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
       if (accountFlight) await accountFlight.catch(() => undefined);
       if (disposed) return;
       const before = await snapshot();
-      if (!before.identity) { await info('官方暂未提供可核对的账号身份，本次不消费重置卡。'); return; }
+      if (!before.identity) { info('官方暂未提供可核对的账号身份，本次不消费重置卡。'); return; }
       let card = before.credits.items.find(item => item.id === id && item.available);
-      if (!card || disposed) { await info('这张重置卡已不可用或已过期，请刷新后查看。'); return; }
+      if (!card || disposed) { info('这张重置卡已不可用或已过期，请刷新后查看。'); return; }
       const expiry = card.expiresAt ? `\n失效时间：${new Date(card.expiresAt * 1000).toLocaleString()}` : '';
       const choice = await vscode.window.showWarningMessage(`将消耗“${card.title}”重置 Codex 官方额度。${expiry}\n此操作会使用真实重置卡。`, { modal: true }, '消耗重置卡并重置');
       if (disposed || choice !== '消耗重置卡并重置') return;
@@ -490,14 +495,16 @@ function createSidebarController(vscode, context, { postState, openNewTab, openT
       const latest = await snapshot();
       card = latest.credits.items.find(item => item.id === id && item.available);
       if (disposed) return;
-      if (!card || latest.identity !== before.identity) { await info('账号或重置卡状态已变化，请刷新后重试。'); return; }
+      if (!card || latest.identity !== before.identity) { info('账号或重置卡状态已变化，请刷新后重试。'); return; }
       if (!resetKeys.has(id)) resetKeys.set(id, randomUUID());
       consumed = true;
       const result = await rpc('account/rateLimitResetCredit/consume', { creditId: id, idempotencyKey: resetKeys.get(id) });
       const messages = { reset: '官方已完成额度重置。', nothingToReset: '官方返回：当前没有需要重置的额度。', noCredit: '官方返回：没有可用重置卡。', alreadyRedeemed: '官方返回：这张卡已经使用。' };
-      await info(messages[result?.outcome] || '官方返回了无法识别的重置结果，请刷新确认；不要重复消费。');
+      info(messages[result?.outcome] || '官方返回了无法识别的重置结果，请刷新确认；不要重复消费。');
     } catch {
-      if (!disposed) await vscode.window.showErrorMessage(consumed ? '重置结果暂时无法确认。请刷新官方额度及卡状态；系统不会自动重复消费。' : '无法核对重置卡状态，本次未发起消费。');
+      void Promise.resolve().then(() => {
+        if (!disposed) return vscode.window.showErrorMessage(consumed ? '重置结果暂时无法确认。请刷新官方额度及卡状态；系统不会自动重复消费。' : '无法核对重置卡状态，本次未发起消费。');
+      }).catch(() => undefined);
     } finally {
       resetBusy = false;
       if (!disposed) { state.credits.busyId = undefined; emit(); await refresh(); }

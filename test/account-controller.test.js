@@ -14,7 +14,7 @@ function setup(options = {}) {
     async checkSupport() { if (options.unsupported) throw new Error('private config'); },
     async list() { return [{ ...profile, secret: 'MUST_NOT_LEAK' }]; },
     async saveCurrent(value) { assert.ok(value); saved++; },
-    async stageSwitch(id, _value, beforeWrite) { assert.equal(id, profile.id); if (beforeWrite) await beforeWrite(); switched++; if (options.stage) await options.stage(); return { changed: true, cleanupWarning: options.cleanupWarning, async rollback() { rolledBack++; return true; } }; },
+    async stageSwitch(id, _value, beforeWrite) { assert.equal(id, profile.id); if (beforeWrite) await beforeWrite(); switched++; if (options.stage) await options.stage(); return { changed: true, cleanupWarning: options.cleanupWarning, async rollback() { rolledBack++; if (options.rollback) await options.rollback(); return true; } }; },
     async rename() {}, async remove() {},
   };
   const bridge = async request => {
@@ -32,7 +32,7 @@ function setup(options = {}) {
   };
   const vscode = {
     commands: { async executeCommand(command) { calls.push(command); if (options.reloadFails) throw new Error('TOKEN DO NOT DISPLAY'); } },
-    window: { async showErrorMessage(value) { errors.push(value); }, async showInputBox() { return 'Updated'; }, async showWarningMessage() { return options.remove ? '移除账号' : undefined; } },
+    window: { async showErrorMessage(value) { errors.push(value); if (options.errorNotice) return options.errorNotice(); }, async showInputBox() { return 'Updated'; }, async showWarningMessage() { return options.remove ? '移除账号' : undefined; } },
     env: { async openExternal() { return options.browser !== false; } }, Uri: { parse(value) { return value; } },
   };
   const context = { globalState: { get: key => values.get(key), async update(key, value) { values.set(key, value); } } };
@@ -84,6 +84,83 @@ test('reload failure rolls back and errors never expose underlying token details
   assert.equal(app.controller.busy, false);
   assert.equal(app.values.get('codexMultiTab.pendingAccountSwitch'), undefined);
   assert.equal(app.errors.join().includes('TOKEN'), false);
+});
+
+test('switch failures explain known store errors without exposing exception details', async () => {
+  const cases = [
+    ['BUSY', /另一个窗口.*操作锁/],
+    ['IDENTITY', /身份.*刷新/],
+    ['CHANGED', /登录文件.*未覆盖/],
+    ['INVALID_AUTH', /凭据格式.*重新登录/],
+    ['NOT_FOUND', /账号不存在.*刷新/],
+    ['STORAGE', /安全存储.*权限/],
+    ['UNSUPPORTED', /存储环境.*确认/],
+  ];
+  for (const [code, expected] of cases) {
+    const cause = Object.assign(new Error('PRIVATE_TOKEN'), { code: `CODEX_MULTI_TAB_ACCOUNT_${code}` });
+    const app = setup({ stage: () => { throw cause; } });
+    await app.init(); await app.controller.handle('switchAccount', profile.id);
+    assert.match(app.errors.at(-1), expected, code);
+    assert.equal(app.states.at(-1).message, app.errors.at(-1));
+    assert.equal(JSON.stringify([app.errors, app.states]).includes('PRIVATE_TOKEN'), false);
+    assert.equal(app.controller.busy, false);
+    assert.equal(app.values.get('codexMultiTab.pendingAccountSwitch'), undefined);
+    assert.equal(app.calls.includes('workbench.action.reloadWindow'), false);
+  }
+});
+
+test('environment changes during an operation show the safe environment reason', async () => {
+  let reason;
+  const app = setup({ bridge: request => request.action === 'accountEnvironment' && reason
+    ? { supported: false, reason, message: 'PRIVATE_TOKEN' } : undefined });
+  await app.init(); reason = 'auth-storage-unsupported';
+  await app.controller.handle('switchAccount', profile.id);
+  assert.match(app.errors.at(-1), /非文件式/);
+  assert.equal(app.stats().switched, 0);
+  assert.equal(JSON.stringify([app.errors, app.states]).includes('PRIVATE_TOKEN'), false);
+});
+
+test('unknown and inherited error codes keep the generic safe operation message', async () => {
+  for (const code of [undefined, 'PRIVATE_TOKEN', 'toString', '__proto__', 'constructor']) {
+    const cause = Object.assign(new Error('PRIVATE_TOKEN'), { code });
+    const app = setup({ stage: () => { throw cause; } });
+    await app.init(); await app.controller.handle('switchAccount', profile.id);
+    assert.match(app.errors.at(-1), /^账号操作未完成。/);
+    assert.equal(app.states.at(-1).message, app.errors.at(-1));
+    assert.equal(JSON.stringify([app.errors, app.states]).includes('PRIVATE_TOKEN'), false);
+  }
+});
+
+test('rollback failure takes precedence over the initial operation error', async () => {
+  const app = setup({ reloadFails: true, rollback: () => { throw new Error('PRIVATE_TOKEN'); } });
+  await app.init(); await app.controller.handle('switchAccount', profile.id);
+  assert.match(app.errors.at(-1), /切换未完成.*缓存已发生变化.*检查当前登录/);
+  assert.equal(app.states.at(-1).message, app.errors.at(-1));
+  assert.equal(JSON.stringify([app.errors, app.states]).includes('PRIVATE_TOKEN'), false);
+});
+
+test('an open error notification does not hold the account operation busy', async () => {
+  const notice = deferred();
+  const app = setup({ stage: () => { throw new Error('failure'); }, errorNotice: () => notice.promise });
+  await app.init();
+  let completed = false;
+  const operation = app.controller.handle('switchAccount', profile.id).then(() => { completed = true; });
+  try {
+    for (let i = 0; i < 12; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(app.errors.length, 1);
+    assert.equal(app.controller.busy, false);
+    assert.equal(completed, true);
+    assert.equal(app.stats().refreshes, 1);
+    assert.equal(app.values.get('codexMultiTab.pendingAccountSwitch'), undefined);
+  } finally { notice.resolve(); await operation; }
+});
+
+test('notification delivery failure does not reject account handling or retain busy state', async () => {
+  const app = setup({ stage: () => { throw new Error('failure'); }, errorNotice: () => Promise.reject(new Error('notice failed')) });
+  await app.init();
+  await assert.doesNotReject(app.controller.handle('switchAccount', profile.id));
+  assert.equal(app.controller.busy, false);
+  assert.equal(app.stats().refreshes, 1);
 });
 
 test('unsupported environments and old bridges disable account features', async () => {
@@ -210,6 +287,8 @@ test('failed browser open with unconfirmed cancellation keeps account operations
   const app = setup({ browser: false, bridge: request => request.action === 'cancelAccountLogin' ? Promise.reject(new Error('offline')) : undefined });
   await app.init(); await app.controller.handle('addAccount');
   assert.equal(app.controller.busy, true);
+  assert.match(app.errors.at(-1), /暂未确认官方登录已取消.*暂停其他账号操作/);
+  assert.equal(app.states.at(-1).message, app.errors.at(-1));
   await app.controller.handle('switchAccount', profile.id);
   assert.equal(app.stats().switched, 0);
   app.controller.dispose();
