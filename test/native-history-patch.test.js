@@ -8,7 +8,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const vm = require('node:vm');
 const { spawnSync } = require('node:child_process');
-const { getNativePatchFiles, isHelperDocument, nativePinnedThreads, navigateHistoryInPlace, partitionNativeHistory } = require('../src/compatibility/native-history-patch');
+const { getNativePatchFiles, getNativeDependencies, isHelperDocument, nativePinnedThreads, navigateHistoryInPlace, partitionNativeHistory } = require('../src/compatibility/native-history-patch');
 
 const documentFor = route => ({ querySelector: () => route == null ? null : { content: route } });
 
@@ -188,13 +188,18 @@ function originalAsset(root, entry) {
   throw new Error(`找不到已校验原件：${entry.file}`);
 }
 
-for (const version of ['26.5908.31748', '26.908.40401']) {
+for (const version of ['26.5908.31748', '26.908.40401', '26.917.61114']) {
   const root = path.join(os.homedir(), `.vscode/extensions/openai.chatgpt-${version}-darwin-arm64`);
   test(`已审计 ${version} 真实资产转换、语法、原生 JSX 选择与菜单行为`, { skip: !fs.existsSync(root) }, () => {
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-native-patch-test-'));
     try {
+      const modern = version === '26.917.61114';
+      for (const entry of getNativeDependencies(version)) {
+        const bytes = fs.readFileSync(path.join(root, entry.file));
+        assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), entry.originalHash);
+      }
       const patches = getNativePatchFiles(version);
-      let app, header;
+      let host, app, header;
       for (const [index, entry] of patches.entries()) {
         const source = originalAsset(root, entry);
         const transformed = entry.transform(source);
@@ -203,12 +208,13 @@ for (const version of ['26.5908.31748', '26.908.40401']) {
         const check = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
         assert.equal(check.status, 0, check.stderr);
         assert.throws(() => entry.transform('unsupported bundle'), /特征/);
+        if (index === 0) host = transformed;
         if (index === 1) app = transformed;
         if (index === 2) header = transformed;
       }
       const old = version === '26.5908.31748';
       // 执行真实转换后的空态判据：仅命中置顶会话时不能同时显示“未找到”。
-      const recent = old ? 'I' : 'P', local = old ? 'F' : 'N', query = old ? 'j' : 'A';
+      const recent = old ? 'I' : modern ? 'F' : 'P', local = old ? 'F' : modern ? 'P' : 'N', query = old || modern ? 'j' : 'A';
       const recentPrefix = header.match(new RegExp(`${recent}\\.length===0\\?([^]*?)${query}\\?`))?.[0];
       const localPrefix = header.match(new RegExp(`${local}\\.length\\?${local}\\.map\\([^]*?\\):([^]*?)${query}\\?`))?.[0];
       assert.ok(recentPrefix && localPrefix);
@@ -218,14 +224,15 @@ for (const version of ['26.5908.31748', '26.908.40401']) {
         assert.equal(vm.runInNewContext(`${recentPrefix}"no-match":"empty":"recent"`, emptyContext), expected);
         assert.equal(vm.runInNewContext(`${localPrefix}"no-match":"empty"`, emptyContext), expected);
       }
-      const pinnedAtom = old ? 'Dw' : 'jw';
-      const row = old ? 's4t' : 'u4t';
-      const plainRow = old ? 'pWt' : 'gWt';
-      const jsx = old ? 'VX' : 'HX';
+      const pinnedAtom = old ? 'Dw' : modern ? 'Lw' : 'jw';
+      const row = old ? 's4t' : modern ? 'YBn' : 'u4t';
+      const plainRow = old ? 'pWt' : modern ? 'cPn' : 'gWt';
+      const jsx = old ? 'VX' : modern ? 'Z2' : 'HX';
       const renderSource = app.slice(app.indexOf('function codexMultiTabHistoryRow('), app.lastIndexOf('export{codexMultiTabHistoryRow'));
       const context = {
         URLSearchParams, document: documentFor('/new?codexMultiTab=qa'),
         vo: atom => { assert.equal(atom, 'native-pins'); return ['pinned']; },
+        o: atom => { assert.equal(atom, 'native-pins'); return ['pinned']; },
         [pinnedAtom]: 'native-pins', [row]: 'native-sidebar-row', [plainRow]: 'native-history-row',
         [jsx]: { jsx: (type, props) => ({ type, props }) },
       };
@@ -241,7 +248,9 @@ for (const version of ['26.5908.31748', '26.908.40401']) {
       assert.equal(context.codexMultiTabHistoryRow({ conversationId: 'pinned' }).type, 'native-history-row');
 
       // 执行实际注入的菜单分支，验证只有原生改名和置顶回调。
-      const start = app.indexOf('et=e=>{if(codexHistory)');
+      const menuStart = modern ? 'mt=e=>{if(codexHistory)' : 'et=e=>{if(codexHistory)';
+      const start = app.indexOf(menuStart);
+      assert.ok(start >= 0);
       const end = app.indexOf(';let t=', start);
       const menuSource = app.slice(start + 'et='.length, end) + ';}';
       const actions = [];
@@ -253,12 +262,24 @@ for (const version of ['26.5908.31748', '26.908.40401']) {
         [pinItem]: ({ isPinned, onPinnedChange }) => ({ id: isPinned ? 'unpin-thread' : 'pin-thread', onSelect: () => onPinnedChange(!isPinned) }),
         [menu]: ({ pin, rename }) => [rename, pin], He: () => actions.push('rename'),
         [pin]: (scope, id, value) => actions.push({ id, value }),
+        E: { get: () => ['pinned'] },
+        S2: ({ isPinned, onPinnedChange }) => ({ id: isPinned ? 'unpin-thread' : 'pin-thread', onSelect: () => onPinnedChange(!isPinned) }),
+        N2: ({ pin, rename }) => [rename, pin], nt: () => actions.push('rename'),
+        UB: (scope, id, value) => actions.push({ id, value }),
       };
       const items = vm.runInNewContext(`(${menuSource})()`, menuContext);
       assert.deepEqual(Array.from(items, item => item.id), ['rename-thread', 'unpin-thread']);
       items[0].onSelect();
       items[1].onSelect();
       assert.deepEqual(actions, ['rename', { id: 'pinned', value: false }]);
+      if (modern) {
+        assert.match(host, /this\.broadcastPersistedAtomUpdate\(se,ue\),se==="pinned-thread-ids"/);
+        assert.ok(host.includes('})(this,qe,e,r))break;let n=hM(r.path);'));
+        assert.match(header, /codexPins=n\(codexMultiTabPinnedIds\)/);
+        assert.match(header, /t\[17\]!==F/);
+        assert.match(header, /t\[26\]!==ae\|\|t\[27\]!==B/);
+        assert.match(app, /getMenuItems:D\|\|codexHistory\?\(\)=>ht\(`row-actions`\)/);
+      }
     } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
   });
 }

@@ -38,7 +38,7 @@
 市场尚未发布的新版本应以机器范围安装，排除该扩展的 Settings Sync；其他扩展仍正常同步：
 
 ```sh
-code --install-extension dist/codex-multi-tab-0.5.3-mofyer.vsix --force --do-not-sync
+code --install-extension dist/codex-multi-tab-0.5.4-mofyer.vsix --force --do-not-sync
 ```
 
 本机曾发生设置同步在本地安装 0.5.0 和 0.5.1 后重新安装市场 0.4.4，日志安装来源为 `settingsSync`。仅核对安装命令成功或短时文件版本不足，需要确认 `metadata.isMachineScoped=true`，并在实际同步之后再次核对版本。

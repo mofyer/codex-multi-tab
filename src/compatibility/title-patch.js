@@ -6,22 +6,34 @@ const crypto = require('node:crypto');
 const PATCH_VERSION = require('../../package.json').version;
 const { getNativePatchFiles, getNativeDependencies } = require('./native-history-patch');
 const { transformSidebarHost, transformSidebarWebview } = require('./sidebar-bridge-patch');
-const HOST_ANCHOR = 'case"navigate-in-new-editor-tab":{let n=pI(r.path);';
+const LEGACY_HOST_ANCHOR = 'case"navigate-in-new-editor-tab":{let n=pI(r.path);';
+const LEGACY_HOST_HASH = '820691c93be40e73f0929b633cddc694b41775050cd72283faba283e53941f4f';
 const PROFILES = {
   '26.5908.31748': {
+    hostAnchor: LEGACY_HOST_ANCHOR,
+    hostHash: LEGACY_HOST_HASH,
     asset: 'webview/assets/app-initial-972655adec02.js',
     api: 'qf',
     nuxAnchor: 'function lQn(){let{data:e,isLoading:t}=$g(xr.NUX_2025_09_15),{authMethod:n}=fu();',
     webHash: '919609dae54b1918456a1039eef6146dee869ec86061b7e845bc919e6fdbb5d5',
   },
   '26.908.40401': {
+    hostAnchor: LEGACY_HOST_ANCHOR,
+    hostHash: LEGACY_HOST_HASH,
     asset: 'webview/assets/app-initial-a190b16fc630.js',
     api: 'Jf',
     nuxAnchor: 'function pQn(){let{data:e,isLoading:t}=n_(xr.NUX_2025_09_15),{authMethod:n}=pu();',
     webHash: '50b1a443400ba2f7ac0be53c56536a3e145bccfff0e2f456f100850133a01683',
   },
+  '26.917.61114': {
+    hostAnchor: 'case"navigate-in-new-editor-tab":{let n=hM(r.path);',
+    hostHash: '2ac22107521c9e8fd1c907bc335bd3b0609c8d612bb2731e8bed6badda5d6f13',
+    asset: 'webview/assets/app-initial-801a1845d914.js',
+    api: 'hp',
+    nuxAnchor: 'function pcr(){let{data:e,isLoading:t}=iS(Cs.NUX_2025_09_15),{authMethod:n}=Zl();',
+    webHash: 'd9cbca4f44d7206d83bcd136f12400282e51cbae2cc8a147cb8b2412faa71eb4',
+  },
 };
-const HOST_HASH = '820691c93be40e73f0929b633cddc694b41775050cd72283faba283e53941f4f';
 
 // 仅按消息来源定位辅助扩展面板，侧栏和其他编辑器不参与更新。
 function updatePanelTitle(host, webview, title) {
@@ -75,9 +87,11 @@ function waitForOnboardingState(status, error, doc = document) {
   return status !== 'success';
 }
 
-function transformHost(source) {
-  return replaceOnce(source, HOST_ANCHOR,
-    `case"codex-multi-tab-title":{(${updatePanelTitle.toString()})(this,e,r.title);break;}${HOST_ANCHOR}`);
+function transformHost(source, version = '26.908.40401') {
+  const anchor = PROFILES[version]?.hostAnchor;
+  if (!anchor) throw new Error('未知宿主补丁配置，拒绝修改');
+  return replaceOnce(source, anchor,
+    `case"codex-multi-tab-title":{(${updatePanelTitle.toString()})(this,e,r.title);break;}${anchor}`);
 }
 
 function transformWebview(source, api) {
@@ -102,7 +116,7 @@ function resolveProfileVersion(root, version, manifest, checkDependencies) {
   const matches = Object.entries(PROFILES).filter(([candidate, profile]) => {
     if (!html.includes(`"./${profile.asset.slice('webview/'.length)}"`)) return false;
     const files = [
-      { file: 'out/extension.js', originalHash: HOST_HASH },
+      { file: 'out/extension.js', originalHash: profile.hostHash },
       { file: profile.asset, originalHash: profile.webHash },
       ...getNativePatchFiles(candidate),
       ...(checkDependencies ? getNativeDependencies(candidate) : []),
@@ -161,7 +175,7 @@ function patchExtensionUnlocked(directory, action, backupRoot) {
     }
   }
   const patches = [
-    { file: 'out/extension.js', originalHash: HOST_HASH, transform: source => transformSidebarHost(transformHost(source)) },
+    { file: 'out/extension.js', originalHash: profile.hostHash, transform: source => transformSidebarHost(transformHost(source, profileVersion), profileVersion) },
     { file: profile.asset, originalHash: profile.webHash, transform: source => transformSidebarWebview(transformWebview(source, profile.api), profileVersion) },
   ];
   for (const native of getNativePatchFiles(profileVersion)) {

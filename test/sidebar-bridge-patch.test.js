@@ -3,6 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
 const vm = require('node:vm');
 const { spawnSync } = require('node:child_process');
 const { registerSidebarBridge, reportSidebarRoute, transformSidebarHost, transformSidebarWebview } = require('../src/compatibility/sidebar-bridge-patch');
@@ -185,8 +188,12 @@ test('历史标签已创建尚未上报时可立即 reveal；首次真实路由�
 });
 
 test('真实 useLocation 包装只在 layout effect 提交后发送；丢弃渲染不改映射、不再 acquire API', () => {
-  for (const [version, alias, api] of [['26.5908.31748', 'Qo', 'qf'], ['26.908.40401', 'Zo', 'Jf']]) {
-    const source = transformSidebarWebview(`import{xW as ${alias},x as other}from"fixture";`, version);
+  for (const [version, exported, alias, api] of [
+    ['26.5908.31748', 'xW', 'Qo', 'qf'],
+    ['26.908.40401', 'xW', 'Zo', 'Jf'],
+    ['26.917.61114', 'RZ', 'Hr', 'hp'],
+  ]) {
+    const source = transformSidebarWebview(`import{${exported} as ${alias},x as other}from"fixture";`, version);
     assert.equal(source.includes('acquireVsCodeApi'), false);
     const effects = [], messages = [], document = {};
     let location = { pathname: '/extension/panel/new' };
@@ -235,6 +242,40 @@ for (const [version, asset] of [['26.5908.31748', 'app-initial-972655adec02.js']
     assert.equal(syntax.status, 0, syntax.stderr);
   });
 }
+
+const currentOfficialVsix = path.join(os.homedir(), 'Library/Application Support/Code/CachedExtensionVSIXs/openai.chatgpt-26.917.61114-darwin-arm64');
+const currentOfficialRoot = path.join(os.homedir(), '.vscode/extensions/openai.chatgpt-26.917.61114-darwin-arm64');
+test('真实 26.917 资产：侧栏宿主与路由 hook 变换后保持语法正确', {
+  skip: !fs.existsSync(currentOfficialVsix) && !fs.existsSync(path.join(currentOfficialRoot, 'out/extension.js')),
+}, () => {
+  const original = (file, expectedHash) => {
+    let bytes;
+    if (fs.existsSync(currentOfficialVsix)) {
+      const result = spawnSync('unzip', ['-p', currentOfficialVsix, `extension/${file}`], { maxBuffer: 30 * 1024 * 1024 });
+      assert.equal(result.status, 0, result.stderr?.toString());
+      bytes = result.stdout;
+    } else {
+      bytes = fs.readFileSync(path.join(currentOfficialRoot, file));
+      if (crypto.createHash('sha256').update(bytes).digest('hex') !== expectedHash) {
+        const identity = crypto.createHash('sha256').update(fs.realpathSync(currentOfficialRoot)).digest('hex').slice(0, 16);
+        const backup = path.join(os.homedir(), 'Library/Application Support/Code/User/globalStorage/mofyer.codex-multi-tab/patch-backups', `26.917.61114-${identity}`);
+        const manifest = JSON.parse(fs.readFileSync(path.join(backup, 'manifest.json'), 'utf8'));
+        const entry = manifest.files.find(item => item.file === file);
+        assert.equal(entry?.originalHash, expectedHash);
+        bytes = fs.readFileSync(path.join(backup, entry.backup));
+      }
+    }
+    assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), expectedHash);
+    return bytes.toString('utf8');
+  };
+  const host = transformSidebarHost(original('out/extension.js', '2ac22107521c9e8fd1c907bc335bd3b0609c8d612bb2731e8bed6badda5d6f13'), '26.917.61114');
+  const webview = transformSidebarWebview(original('webview/assets/app-initial-801a1845d914.js', 'd9cbca4f44d7206d83bcd136f12400282e51cbae2cc8a147cb8b2412faa71eb4'), '26.917.61114');
+  new vm.Script(host);
+  const syntax = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: webview, encoding: 'utf8' });
+  assert.equal(syntax.status, 0, syntax.stderr);
+  assert.match(webview, /RZ as codexMultiTabOriginalLocation/);
+  assert.match(webview, /function Hr\(\)\{const location=codexMultiTabOriginalLocation\(\)/);
+});
 
 const flush = () => new Promise(resolve => setImmediate(resolve));
 async function seedRunning(f, id = 'one', turnId = 'turn-one') {

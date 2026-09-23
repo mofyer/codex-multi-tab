@@ -3,8 +3,12 @@
 const { nativePinnedThreads } = require('./native-history-patch');
 
 const PROFILES = {
-  '26.5908.31748': { location: 'Qo', api: 'qf' },
-  '26.908.40401': { location: 'Zo', api: 'Jf' },
+  '26.5908.31748': { exportedLocation: 'xW', location: 'Qo', api: 'qf',
+    hostAnchor: 'e.push(dt),e.push({dispose:xB', host: 'dt', vscode: 'bt' },
+  '26.908.40401': { exportedLocation: 'xW', location: 'Zo', api: 'Jf',
+    hostAnchor: 'e.push(dt),e.push({dispose:xB', host: 'dt', vscode: 'bt' },
+  '26.917.61114': { exportedLocation: 'RZ', location: 'Hr', api: 'hp',
+    hostAnchor: 'e.push(Ue),e.push({dispose:LU', host: 'Ue', vscode: 'xt' },
 };
 
 function replaceOnce(source, anchor, replacement) {
@@ -472,9 +476,11 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
   return bridge;
 }
 
-function transformSidebarHost(source) {
-  source = replaceOnce(source, 'e.push(dt),e.push({dispose:xB',
-    `e.push(dt),(${registerSidebarBridge.toString()})(dt,bt,t,(${nativePinnedThreads.toString()})),e.push({dispose:xB`);
+function transformSidebarHost(source, version = '26.908.40401') {
+  const profile = PROFILES[version];
+  if (!profile) throw new Error('此版本尚未审计侧栏路由桥');
+  source = replaceOnce(source, profile.hostAnchor,
+    `e.push(${profile.host}),(${registerSidebarBridge.toString()})(${profile.host},${profile.vscode},t,(${nativePinnedThreads.toString()})),e.push({dispose:${version === '26.917.61114' ? 'LU' : 'xB'}`);
   return replaceOnce(source, 'case"ready":break;case"persisted-atom-sync-request":',
     'case"codex-multi-tab-route":{this.codexMultiTabSidebarBridge?.trackRoute(e,r.pathname);break;}case"ready":break;case"persisted-atom-sync-request":');
 }
@@ -482,7 +488,8 @@ function transformSidebarHost(source) {
 function transformSidebarWebview(source, version) {
   const profile = PROFILES[version];
   if (!profile) throw new Error('此版本尚未审计侧栏路由桥');
-  source = replaceOnce(source, `xW as ${profile.location},`, 'xW as codexMultiTabOriginalLocation,');
+  source = replaceOnce(source, `${profile.exportedLocation} as ${profile.location},`,
+    `${profile.exportedLocation} as codexMultiTabOriginalLocation,`);
   return source + `\nfunction ${profile.location}(){const location=codexMultiTabOriginalLocation();q().useLayoutEffect(()=>{(${reportSidebarRoute.toString()})(${profile.api},location.pathname)},[location.pathname]);return location}\n`;
 }
 

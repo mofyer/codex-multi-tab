@@ -65,7 +65,7 @@
 
 原生界面与侧栏数据能力依赖官方扩展的内部接口及少量资产补丁。扩展会校验已审计文件、保留原始备份，并在启动或官方扩展变化时检查兼容性；**不保证所有后续 Codex 更新自动兼容**。
 
-- 当前 **0.5.3** 回归覆盖官方 **26.908.40401（macOS ARM64）** 安装资产副本的补丁应用、幂等、修改保护及恢复；本轮 201 项测试中 197 项通过，4 项因缺少旧版或缓存资产而跳过。Windows、Linux、macOS Intel 尚未验证，不承诺原生增强可用。
+- 当前 **0.5.4** 回归覆盖官方 **26.917.61114（macOS ARM64）** 安装资产副本的补丁应用、幂等、修改保护及恢复。Windows、Linux、macOS Intel 尚未验证，不承诺原生增强可用。
 - 版本号变化但已审计资产字节完全相同时，可复用兼容配置；哈希或内部结构变化时拒绝修改并提示需要适配。
 - 基础新建标签也依赖官方内部 URI，其变化可能需要适配。桥接不可用时侧栏显示兼容提示，仍保留新建标签入口。
 - 升级辅助扩展不会覆盖存放在其 VS Code `globalStorage/patch-backups/` 下的原始备份。**禁用或卸载不会自动恢复已修改的官方文件**，恢复方法见下文。
@@ -119,7 +119,7 @@ macOS 默认存储根目录为 `~/Library/Application Support/Code/User/globalSt
 npm run check
 npm test
 npm run package
-code --install-extension dist/codex-multi-tab-0.5.3-mofyer.vsix --force --do-not-sync
+code --install-extension dist/codex-multi-tab-0.5.4-mofyer.vsix --force --do-not-sync
 ```
 
 测试覆盖标签隔离、会话管理、运行态与停止、兼容检测、哈希校验、失败回滚和逐字节恢复。缺少对应官方安装包时，相关实包测试会明确标记跳过。

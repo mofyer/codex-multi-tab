@@ -42,15 +42,16 @@ test('旧补丁入口与源码入口共享 API，CLI 默认备份保留在扩展
 const versions = {
   '26.5908.31748': 'app-initial-972655adec02.js',
   '26.908.40401': 'app-initial-a190b16fc630.js',
+  '26.917.61114': 'app-initial-801a1845d914.js',
 };
 
 const nuxFixture = 'function lQn(){let{data:e,isLoading:t}=$g(xr.NUX_2025_09_15),{authMethod:n}=fu();if(!t){if(e)return`none`;switch(n){case`chatgpt`:return`2025-09-15-full-chatgpt-auth`;case`apikey`:return`2025-09-15-apikey-auth`;case null:return`none`}}}';
 
 // 执行变换前后的函数，复现 pending + idle 误进引导，而非只断言补丁文本存在。
-function verifyOnboardingGate(original, patched, name, queryHook, authHook) {
+function verifyOnboardingGate(original, patched, name, queryHook, authHook, nuxConstant = 'xr') {
   let state, authMethod = 'chatgpt';
   const browser = browserFixture();
-  const context = { document: browser.doc, URLSearchParams, xr: { NUX_2025_09_15: 'nux' },
+  const context = { document: browser.doc, URLSearchParams, [nuxConstant]: { NUX_2025_09_15: 'nux' },
     [queryHook]() { return state; }, [authHook]() { return { authMethod }; } };
   const before = vm.runInNewContext(`${original};${name}`, context);
   const after = vm.runInNewContext(`${patched};${name}`, context);
@@ -104,6 +105,14 @@ test('宿主补丁从消息 sender 定位，保持标签隔离并排除侧栏与
   assert.equal(a.title, 'Codex');
   updatePanelTitle(host, 'a', '🚀'.repeat(121));
   assert.equal(Array.from(a.title).length, 120);
+});
+
+test('新版宿主保留官方 replaceCurrentEditor 导航分支', () => {
+  const anchor = 'case"navigate-in-new-editor-tab":{let n=hM(r.path);';
+  const original = `${anchor}if(!r.replaceCurrentEditor){return 'new'}return 'replace'}`;
+  const transformed = transformHost(original, '26.917.61114');
+  assert.equal(transformed.slice(transformed.indexOf(anchor)), original);
+  assert.equal(transformed.split('case"codex-multi-tab-title":').length, 2);
 });
 
 function browserFixture(route = '/extension/panel/new?codexMultiTab=a') {
@@ -169,6 +178,21 @@ test('辅助标签等待读取引导状态，保留首次引导和错误；普�
   const document = browserFixture().doc;
   assert.equal(waitForOnboardingState('success', null, document), false);
   assert.equal(waitForOnboardingState('pending', null, document), true);
+});
+
+test('新版 webview 仅在引导查询成功后进入首次引导判断', () => {
+  const fixture = 'function pcr(){let{data:e,isLoading:t}=iS(Cs.NUX_2025_09_15),{authMethod:n}=Zl();if(!t)return e||n==null?`none`:n===`chatgptAuthTokens`||n===`chatgpt`?`2025-09-15-full-chatgpt-auth`:`2025-09-15-apikey-auth`}';
+  const transformed = transformWebview(`hp=acquireVsCodeApi();${fixture}`, 'hp');
+  let state = { data: false, isLoading: false, status: 'pending' };
+  const document = browserFixture().doc;
+  const context = { document, URLSearchParams, Cs: { NUX_2025_09_15: 'nux' },
+    iS: () => state, Zl: () => ({ authMethod: 'chatgpt' }) };
+  const before = vm.runInNewContext(`${fixture};pcr`, context);
+  const after = vm.runInNewContext(`${transformed.slice(transformed.indexOf('function pcr()'))};pcr`, context);
+  assert.equal(before(), '2025-09-15-full-chatgpt-auth');
+  assert.equal(after(), undefined);
+  state = { ...state, status: 'success' };
+  assert.equal(after(), '2025-09-15-full-chatgpt-auth');
 });
 
 for (const [version, asset] of Object.entries(versions)) {
@@ -250,14 +274,17 @@ for (const [version, asset] of Object.entries(versions)) {
     for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes);
     assert.equal(patchExtension(root, 'apply', backups).status, 'applied');
     assert.equal(patchExtension(root, 'apply', backups).status, 'already-applied');
-    const api = version === '26.5908.31748' ? 'qf' : 'Jf';
-    const name = version === '26.5908.31748' ? 'lQn' : 'pQn';
+    const [api, name, queryHook, authHook, nuxConstant] = {
+      '26.5908.31748': ['qf', 'lQn', '$g', 'fu', 'xr'],
+      '26.908.40401': ['Jf', 'pQn', 'n_', 'pu', 'xr'],
+      '26.917.61114': ['hp', 'pcr', 'iS', 'Zl', 'Cs'],
+    }[version];
     const originalWebview = originals.get(`webview/assets/${asset}`).toString();
     const patchedWebview = fs.readFileSync(path.join(root, `webview/assets/${asset}`), 'utf8');
     // 真实 bundle 的函数边界由相邻 var 声明限定，两版本都运行原函数和实际变换后的函数。
     const extractNux = source => source.slice(source.indexOf(`function ${name}()`), source.indexOf('var ', source.indexOf(`function ${name}()`)));
     verifyOnboardingGate(extractNux(originalWebview), extractNux(patchedWebview), name,
-      api === 'qf' ? '$g' : 'n_', api === 'qf' ? 'fu' : 'pu');
+      queryHook, authHook, nuxConstant);
     const host = path.join(root, 'out/extension.js');
     const patched = fs.readFileSync(host);
     assert.notDeepEqual(patched, originals.get('out/extension.js'));
@@ -280,7 +307,7 @@ for (const [version, asset] of Object.entries(versions)) {
     const oldFourManifest = JSON.parse(fs.readFileSync(oldFourManifestPath, 'utf8'));
     for (const patch of nativePatches) {
       let source = originals.get(patch.file).toString();
-      if (patch.file === 'out/extension.js') source = transformHost(source);
+      if (patch.file === 'out/extension.js') source = transformHost(source, version);
       if (patch.file === `webview/assets/${asset}`) source = transformWebview(source, api);
       const oldBytes = Buffer.from(patch.transform(source));
       fs.writeFileSync(path.join(root, patch.file), oldBytes);
@@ -305,8 +332,11 @@ for (const [version, asset] of Object.entries(versions)) {
     fs.writeFileSync(manifestPath, JSON.stringify(manifest));
     for (const patch of additionalPatches) fs.writeFileSync(path.join(root, patch.file), originals.get(patch.file));
     manifest.files = manifest.files.slice(0, 2);
-    const oldHost = originals.get('out/extension.js').toString().replace('case"navigate-in-new-editor-tab":{let n=pI(r.path);',
-      () => `case"codex-multi-tab-title":{(${updatePanelTitle.toString()})(this,e,r.title);break;}case"navigate-in-new-editor-tab":{let n=pI(r.path);`);
+    const hostAnchor = version === '26.917.61114'
+      ? 'case"navigate-in-new-editor-tab":{let n=hM(r.path);'
+      : 'case"navigate-in-new-editor-tab":{let n=pI(r.path);';
+    const oldHost = originals.get('out/extension.js').toString().replace(hostAnchor,
+      () => `case"codex-multi-tab-title":{(${updatePanelTitle.toString()})(this,e,r.title);break;}${hostAnchor}`);
     fs.writeFileSync(host, oldHost);
     manifest.files[0].patchedHash = crypto.createHash('sha256').update(oldHost).digest('hex');
     fs.writeFileSync(manifestPath, JSON.stringify(manifest));
