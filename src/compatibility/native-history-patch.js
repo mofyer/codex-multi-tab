@@ -33,6 +33,10 @@ const PROFILES = {
     groupActive: 'b', groupClose: 'o', groupArchive: 'p', mode: 'y', splitAnchor: ':D,I;', splitNext: 'I', emptyQuery: 'j',
     localEmpty: 'P.length?P.map(e=>(0,Z.jsx)(An,{conversationId:e.id,hostId:e.hostId,updatedAt:e.recencyAt??e.updatedAt,isActive:b===e.id,onClose:o,onActiveArchiveStart:p},e.id)):j?',
   },
+  // This build is bridge/title audited, but its split native-history bundles
+  // have not been audited yet. Keep the optional patch set empty until that
+  // work is complete instead of applying an older row/header transform.
+  '26.917.62051': { baseOnly: true },
 };
 
 function replaceOnce(source, anchor, replacement) {
@@ -168,6 +172,7 @@ function transformNativePanel(source, profile) {
 function getNativePatchFiles(version) {
   const profile = PROFILES[version];
   if (!profile) throw new Error('此版本尚未审计原生历史补丁');
+  if (profile.baseOnly) return [];
   return [
     { file: 'out/extension.js', originalHash: profile.hostHash, transform: source => transformNativeHost(source, profile) },
     { file: `webview/assets/${profile.app}`, originalHash: profile.appHash, transform: source => transformNativeApp(source, profile) },
@@ -179,6 +184,7 @@ function getNativePatchFiles(version) {
 function getNativeDependencies(version) {
   const profile = PROFILES[version];
   if (!profile) throw new Error('此版本尚未审计原生历史依赖');
+  if (profile.baseOnly) return [];
   return [{ file: `webview/assets/${profile.headerWrapper}`, originalHash: profile.wrapperHash }];
 }
 

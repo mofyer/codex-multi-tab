@@ -9,6 +9,8 @@ const PROFILES = {
     hostAnchor: 'e.push(dt),e.push({dispose:xB', host: 'dt', vscode: 'bt' },
   '26.917.61114': { exportedLocation: 'RZ', location: 'Hr', api: 'hp',
     hostAnchor: 'e.push(Ue),e.push({dispose:LU', host: 'Ue', vscode: 'xt' },
+  '26.917.62051': { exportedLocation: 'RZ', location: 'Hr', api: 'hp',
+    hostAnchor: 'e.push(Ue),e.push({dispose:NU', host: 'Ue', vscode: 'xt' },
 };
 
 function replaceOnce(source, anchor, replacement) {
@@ -480,7 +482,7 @@ function transformSidebarHost(source, version = '26.908.40401') {
   const profile = PROFILES[version];
   if (!profile) throw new Error('此版本尚未审计侧栏路由桥');
   source = replaceOnce(source, profile.hostAnchor,
-    `e.push(${profile.host}),(${registerSidebarBridge.toString()})(${profile.host},${profile.vscode},t,(${nativePinnedThreads.toString()})),e.push({dispose:${version === '26.917.61114' ? 'LU' : 'xB'}`);
+    `e.push(${profile.host}),(${registerSidebarBridge.toString()})(${profile.host},${profile.vscode},t,(${nativePinnedThreads.toString()})),e.push({dispose:${version === '26.917.61114' ? 'LU' : version === '26.917.62051' ? 'NU' : 'xB'}`);
   return replaceOnce(source, 'case"ready":break;case"persisted-atom-sync-request":',
     'case"codex-multi-tab-route":{this.codexMultiTabSidebarBridge?.trackRoute(e,r.pathname);break;}case"ready":break;case"persisted-atom-sync-request":');
 }

@@ -66,11 +66,11 @@ As of 0.5.3, API results determine operation completion; notifications only repo
 
 ## Codex updates and compatibility
 
-Native UI enhancements and sidebar data access depend on internal interfaces and small patches to the official extension's assets. This extension validates audited files, retains original backups, and checks compatibility at startup and when the official extension changes. **Automatic compatibility with every future Codex update is not guaranteed.**
+Native UI enhancements and sidebar data access depend on internal interfaces and small patches to the official extension's assets. This extension validates audited files, retains original backups, and checks compatibility at startup and when the official extension changes. **Automatic compatibility with every future Codex update is not guaranteed.** Core bridge support and native history enhancements are checked separately, so a change in one asset group does not block official Codex features or the independent-tab entry point.
 
-- Regression verification for **0.5.4** covers patch application, idempotency, modification protection, and restoration on copies of installed official **26.917.61114 assets on macOS ARM64**. Windows, Linux, and Intel Macs have not been verified, and native enhancement support is not promised on those platforms.
-- A changed release version can reuse a compatibility profile if the audited asset bytes are identical. If file hashes or internal structures change, modification is refused and an adaptation notice is shown.
-- Basic tab creation also depends on an internal Codex URI, which may require adaptation if it changes. When the bridge is unavailable, the sidebar displays a compatibility notice and retains the new-tab entry point.
+- Regression verification for **0.5.5** covers the core bridge assets of official **26.917.62051** and the full enhancement assets of **26.917.61114** on macOS ARM64. For 26.917.62051, the sidebar bridge, independent-tab titles, and onboarding gate are hash-audited; native history remains disabled until its new assets are audited. Windows, Linux, and Intel Macs have not been verified.
+- A changed release version can reuse a compatibility profile if the core bridge asset bytes are identical. If core bridge hashes or internal structures change, modification is refused and an adaptation notice is shown. A native-history-only change uses the core-only degraded mode.
+- Basic tab creation also depends on an internal Codex URI, which may require adaptation if it changes. When the bridge is unavailable, the sidebar displays a compatibility notice and retains the new-tab entry point; when only native history is unavailable, the sidebar keeps its account, usage, and project-session features and reports the degraded state.
 - Updating Codex Multi Tab does not overwrite original backups stored under its VS Code `globalStorage/patch-backups/` directory. **Disabling or uninstalling this extension does not automatically restore modified Codex files.** See the restoration instructions below.
 
 ## Limitations
@@ -122,7 +122,7 @@ On macOS, the default storage root is `~/Library/Application Support/Code/User/g
 npm run check
 npm test
 npm run package
-code --install-extension dist/codex-multi-tab-0.5.4-mofyer.vsix --force --do-not-sync
+code --install-extension dist/codex-multi-tab-0.5.5-mofyer.vsix --force --do-not-sync
 ```
 
 Tests cover tab isolation, conversation management, runtime status and stopping, compatibility detection, hash validation, rollback after failed application, and byte-for-byte restoration. Tests that require an official installation package are explicitly marked as skipped when that package is unavailable.

@@ -54,12 +54,18 @@ function createCompatibilityManager(vscode, context, patcher = (...args) => requ
       if (disposed) return;
       if (result.status === 'already-applied') {
         busyRetries = 0;
+        if (result.degraded) {
+          notify(`${identity}:degraded`, 'Codex Multi Tab 核心桥接已启用；原生历史等增强暂不可用。', false);
+        }
         return;
       }
       if (result.status !== 'ready') throw new Error(`未知兼容检查结果：${result.status}`);
-      await patcher(directory, 'apply', backupRoot);
+      const applied = await patcher(directory, 'apply', backupRoot);
       busyRetries = 0;
-      notify(`${identity}:applied`, 'Codex Multi Tab 增强已适配当前官方扩展。请在运行中的任务结束后重载窗口生效。', true);
+      const message = (applied.degraded ?? result.degraded)
+        ? 'Codex Multi Tab 已启用独立标签与侧栏基础桥接；原生历史等增强暂不可用。请在运行中的任务结束后重载窗口生效。'
+        : 'Codex Multi Tab 增强已适配当前官方扩展。请在运行中的任务结束后重载窗口生效。';
+      notify(`${identity}:applied`, message, true);
     } catch (error) {
       if (disposed) return;
       if (error?.code === 'CODEX_MULTI_TAB_PATCH_BUSY') {

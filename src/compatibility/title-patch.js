@@ -33,6 +33,18 @@ const PROFILES = {
     nuxAnchor: 'function pcr(){let{data:e,isLoading:t}=iS(Cs.NUX_2025_09_15),{authMethod:n}=Zl();',
     webHash: 'd9cbca4f44d7206d83bcd136f12400282e51cbae2cc8a147cb8b2412faa71eb4',
   },
+  // Codex 26.917.62051 changed the bundled asset names and host minification.
+  // The host bridge and title/onboarding hooks were audited against the exact
+  // hashes below; native history remains intentionally disabled for this build.
+  '26.917.62051': {
+    hostAnchor: 'case"navigate-in-new-editor-tab":{let n=fM(r.path);',
+    hostHash: '7ba6208c447c393e050a8ba46893e9e1aa4abd718cb4a8610fa87b12942633bc',
+    asset: 'webview/assets/app-initial-de4359f78ed1.js',
+    api: 'hp',
+    nuxAnchor: 'function pcr(){let{data:e,isLoading:t}=iS(Cs.NUX_2025_09_15),{authMethod:n}=Zl();',
+    webHash: 'ffdf480c63b5c99009ae0b618cad846ac5f33af42af4cec900f633586370a9dc',
+    coreOnly: true,
+  },
 };
 
 // 仅按消息来源定位辅助扩展面板，侧栏和其他编辑器不参与更新。
@@ -109,7 +121,7 @@ function hash(bytes) {
 }
 
 // 发行版本号可变化；仅当实际加载的已审计资产字节完全一致时复用兼容配置。
-function resolveProfileVersion(root, version, manifest, checkDependencies) {
+function resolveProfileVersion(root, version, manifest, checkDependencies, includeNative = true) {
   if (PROFILES[version]) return version;
   const htmlFile = path.join(root, 'webview/index.html');
   const html = fs.existsSync(htmlFile) ? fs.readFileSync(htmlFile, 'utf8') : '';
@@ -118,8 +130,8 @@ function resolveProfileVersion(root, version, manifest, checkDependencies) {
     const files = [
       { file: 'out/extension.js', originalHash: profile.hostHash },
       { file: profile.asset, originalHash: profile.webHash },
-      ...getNativePatchFiles(candidate),
-      ...(checkDependencies ? getNativeDependencies(candidate) : []),
+      ...(includeNative ? getNativePatchFiles(candidate) : []),
+      ...(checkDependencies && includeNative ? getNativeDependencies(candidate) : []),
     ];
     return files.every(entry => {
       const file = path.join(root, entry.file);
@@ -164,21 +176,35 @@ function patchExtensionUnlocked(directory, action, backupRoot) {
       throw Object.assign(new Error('其他窗口已安装新版增强，请重载当前窗口后再操作'), { code: 'CODEX_MULTI_TAB_NEWER_PATCH_PRESENT' });
     }
   }
-  const profileVersion = resolveProfileVersion(root, pkg.version, savedManifest, action !== 'restore');
-  const profile = PROFILES[profileVersion];
-  if (action !== 'restore') {
-    for (const dependency of getNativeDependencies(profileVersion)) {
-      const file = path.join(root, dependency.file);
-      if (!fs.existsSync(file) || hash(fs.readFileSync(file)) !== dependency.originalHash) {
-        throw new Error(`原生界面依赖不兼容，拒绝修改：${dependency.file}`);
-      }
-    }
+  let profileVersion;
+  try {
+    profileVersion = resolveProfileVersion(root, pkg.version, savedManifest, action !== 'restore', savedManifest?.mode !== 'core-only');
+  } catch (error) {
+    // 新版官方扩展可能只改动原生历史资产；先按核心桥资产识别已审计配置，
+    // 让独立标签和侧栏数据桥继续工作，同时保持未知核心资产拒绝修改。
+    if (action === 'restore' || savedManifest) throw error;
+    profileVersion = resolveProfileVersion(root, pkg.version, savedManifest, action !== 'restore', false);
   }
-  const patches = [
+  const profile = PROFILES[profileVersion];
+  const corePatches = [
     { file: 'out/extension.js', originalHash: profile.hostHash, transform: source => transformSidebarHost(transformHost(source, profileVersion), profileVersion) },
     { file: profile.asset, originalHash: profile.webHash, transform: source => transformSidebarWebview(transformWebview(source, profile.api), profileVersion) },
   ];
-  for (const native of getNativePatchFiles(profileVersion)) {
+  const nativePatches = getNativePatchFiles(profileVersion);
+  const nativeCompatible = action === 'restore' || (nativePatches.length > 0 && nativePatches.every(patch => {
+    const file = path.join(root, patch.file);
+    return fs.existsSync(file) && hash(fs.readFileSync(file)) === patch.originalHash;
+  }) && getNativeDependencies(profileVersion).every(dependency => {
+    const file = path.join(root, dependency.file);
+    return fs.existsSync(file) && hash(fs.readFileSync(file)) === dependency.originalHash;
+  }));
+  const degraded = profile.coreOnly === true || savedManifest?.mode === 'core-only'
+    || (!savedManifest && action !== 'restore' && !nativeCompatible);
+  const patches = degraded ? [...corePatches] : [...corePatches, ...nativePatches];
+  if (degraded && savedManifest && savedManifest.mode !== 'core-only') {
+    throw new Error('新增补丁资产不兼容，保留已有增强');
+  }
+  for (const native of (degraded ? [] : nativePatches)) {
     const existing = patches.find(patch => patch.file === native.file);
     if (!existing) patches.push(native);
     else {
@@ -222,7 +248,8 @@ function patchExtensionUnlocked(directory, action, backupRoot) {
       throw Object.assign(new Error('发现旧版本补丁，请先 restore 再 apply'), { code: 'CODEX_MULTI_TAB_REAPPLY_REQUIRED' });
     }
     if (!entries.every(entry => entry.currentHash === entry.patchedHash)) throw Object.assign(new Error('发现未完成的补丁，请先 restore 再 apply'), { code: 'CODEX_MULTI_TAB_REAPPLY_REQUIRED' });
-    return { status: 'already-applied', version: pkg.version, files: expectedFiles };
+    return { status: 'already-applied', version: pkg.version, files: expectedFiles,
+      degraded: manifest.mode === 'core-only' || profile.coreOnly === true };
   }
   if (action === 'restore') return { status: 'not-applied', version: pkg.version };
   const entries = patches.map((patch, index) => {
@@ -235,12 +262,12 @@ function patchExtensionUnlocked(directory, action, backupRoot) {
     const patched = Buffer.from(patch.transform(source));
     return { file: relative, backup: `${index}.original`, originalHash, patchedHash: hash(patched), original, patched };
   });
-  if (action === 'dry-run') return { status: 'ready', version: pkg.version, files: expectedFiles };
+  if (action === 'dry-run') return { status: 'ready', version: pkg.version, files: expectedFiles, degraded };
   fs.mkdirSync(backupRoot, { mode: 0o700, recursive: true });
   const staging = fs.mkdtempSync(path.join(backupRoot, '.title-backup-'));
   try {
     for (const entry of entries) fs.writeFileSync(path.join(staging, entry.backup), entry.original, { flag: 'wx', mode: 0o600 });
-    fs.writeFileSync(path.join(staging, 'manifest.json'), JSON.stringify({ format: 1, root, version: pkg.version, patchVersion: PATCH_VERSION, files: entries.map(({ original, patched, ...entry }) => entry) }, null, 2), { flag: 'wx', mode: 0o600 });
+    fs.writeFileSync(path.join(staging, 'manifest.json'), JSON.stringify({ format: 1, root, version: pkg.version, patchVersion: PATCH_VERSION, ...(degraded ? { mode: 'core-only' } : {}), files: entries.map(({ original, patched, ...entry }) => entry) }, null, 2), { flag: 'wx', mode: 0o600 });
     fs.renameSync(staging, backup);
   } finally {
     if (fs.existsSync(staging)) fs.rmSync(staging, { recursive: true });
@@ -261,7 +288,7 @@ function patchExtensionUnlocked(directory, action, backupRoot) {
     if (failures.length === 0) fs.rmSync(backup, { recursive: true });
     throw new Error(failures.length ? `应用失败，备份已保留；回滚失败：${failures.join('; ')}；原错误：${error.message}` : `应用失败，已撤销本次修改：${error.message}`);
   }
-  return { status: 'applied', version: pkg.version, files: expectedFiles };
+  return { status: 'applied', version: pkg.version, files: expectedFiles, degraded };
 }
 
 // 不同 VS Code 窗口共享同一备份根目录；写入期间禁止另一个进程恢复或应用。

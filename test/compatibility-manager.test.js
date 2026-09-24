@@ -52,6 +52,18 @@ test('激活自动检查和应用，使用持久备份，不自动重载', async
   state.manager.dispose();
 });
 
+test('核心桥降级时明确提示原生历史增强暂不可用', async () => {
+  let applied = false;
+  const state = setup((_directory, action) => {
+    if (action === 'apply') { applied = true; return { status: 'applied', degraded: true }; }
+    return applied ? { status: 'already-applied', degraded: true } : { status: 'ready', degraded: true };
+  });
+  await state.manager.requestCheck();
+  assert.equal(state.notices.length, 1);
+  assert.match(state.notices[0].message, /原生历史/);
+  state.manager.dispose();
+});
+
 test('已应用保持原样；缺失官方扩展不提示，安装后按真实路径检查', async () => {
   const calls = [];
   const state = setup((directory, action) => { calls.push({ directory, action }); return { status: 'already-applied' }; }, null);

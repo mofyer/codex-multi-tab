@@ -378,3 +378,25 @@ for (const [version, asset] of Object.entries(versions)) {
     assert.deepEqual(fs.readFileSync(host), changed);
   });
 }
+
+test('26.917.62051 核心资产可降级应用，原生历史未审计时仍可恢复', t => {
+  const installed = path.join(os.homedir(), '.vscode/extensions/openai.chatgpt-26.917.62051-darwin-arm64');
+  if (!fs.existsSync(installed)) return t.skip('本机未安装 26.917.62051');
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-core-only-test-'));
+  t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+  const root = path.join(temporary, 'extension'), backups = path.join(temporary, 'backups');
+  for (const file of ['package.json', 'out/extension.js', 'webview/index.html', 'webview/assets/app-initial-de4359f78ed1.js']) {
+    const target = path.join(root, file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(installed, file), target);
+  }
+  const dry = patchExtension(root, 'dry-run', backups);
+  assert.equal(dry.status, 'ready');
+  assert.equal(dry.degraded, true);
+  assert.deepEqual(dry.files, ['out/extension.js', 'webview/assets/app-initial-de4359f78ed1.js']);
+  assert.equal(patchExtension(root, 'apply', backups).degraded, true);
+  const manifest = JSON.parse(fs.readFileSync(path.join(backups, fs.readdirSync(backups)[0], 'manifest.json'), 'utf8'));
+  assert.equal(manifest.mode, 'core-only');
+  assert.equal(patchExtension(root, 'dry-run', backups).status, 'already-applied');
+  assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
+});
