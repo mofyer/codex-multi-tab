@@ -379,24 +379,84 @@ for (const [version, asset] of Object.entries(versions)) {
   });
 }
 
-test('26.917.62051 核心资产可降级应用，原生历史未审计时仍可恢复', t => {
-  const installed = path.join(os.homedir(), '.vscode/extensions/openai.chatgpt-26.917.62051-darwin-arm64');
-  if (!fs.existsSync(installed)) return t.skip('本机未安装 26.917.62051');
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-core-only-test-'));
-  t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
-  const root = path.join(temporary, 'extension'), backups = path.join(temporary, 'backups');
-  for (const file of ['package.json', 'out/extension.js', 'webview/index.html', 'webview/assets/app-initial-de4359f78ed1.js']) {
-    const target = path.join(root, file);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.copyFileSync(path.join(installed, file), target);
-  }
-  const dry = patchExtension(root, 'dry-run', backups);
-  assert.equal(dry.status, 'ready');
-  assert.equal(dry.degraded, true);
-  assert.deepEqual(dry.files, ['out/extension.js', 'webview/assets/app-initial-de4359f78ed1.js']);
-  assert.equal(patchExtension(root, 'apply', backups).degraded, true);
-  const manifest = JSON.parse(fs.readFileSync(path.join(backups, fs.readdirSync(backups)[0], 'manifest.json'), 'utf8'));
-  assert.equal(manifest.mode, 'core-only');
-  assert.equal(patchExtension(root, 'dry-run', backups).status, 'already-applied');
-  assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
-});
+// 核心桥已审计、原生历史分块未审计的版本：只修改宿主和入口分块，可完整恢复。
+const coreOnlyVersions = {
+  '26.917.62051': { asset: 'app-initial-de4359f78ed1.js' },
+  '26.1002.51308': { asset: 'app-initial-d277996860bb.js', nux: ['CBi', 'DC', 'jd', 'au'], location: ['lst', 'aa', 'K'] },
+  '26.1007.21434': { asset: 'app-initial-c014f9ee4429.js', nux: ['FGi', 'UC', 'Lf', 'hs'], location: ['alt', 'ca', 'X'] },
+};
+
+// 按括号边界截取压缩包中的单个函数，执行真实原函数与补丁后的函数。
+function extractFunction(source, name) {
+  const start = source.indexOf(`function ${name}(){`);
+  assert.ok(start >= 0, `缺少函数 ${name}`);
+  let index = source.indexOf('{', start), depth = 0;
+  do {
+    if (source[index] === '{') depth++;
+    else if (source[index] === '}') depth--;
+    index++;
+  } while (depth > 0 && index < source.length);
+  return source.slice(start, index);
+}
+
+// 本机已应用增强时，从经哈希核对的运行时备份取原件，仍只修改临时副本。
+function officialOriginal(version, installed, file) {
+  const identity = crypto.createHash('sha256').update(fs.realpathSync(installed)).digest('hex').slice(0, 16);
+  const backup = path.join(os.homedir(), 'Library/Application Support/Code/User/globalStorage/mofyer.codex-multi-tab/patch-backups', `${version}-${identity}`);
+  const manifestFile = path.join(backup, 'manifest.json');
+  const entry = fs.existsSync(manifestFile)
+    ? JSON.parse(fs.readFileSync(manifestFile, 'utf8')).files.find(item => item.file === file) : undefined;
+  if (!entry) return fs.readFileSync(path.join(installed, file));
+  const bytes = fs.readFileSync(path.join(backup, entry.backup));
+  assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), entry.originalHash);
+  return bytes;
+}
+
+for (const [version, { asset, nux, location }] of Object.entries(coreOnlyVersions)) {
+  test(`${version} 核心资产可降级应用，原生历史未审计时仍可恢复`, t => {
+    const installed = path.join(os.homedir(), `.vscode/extensions/openai.chatgpt-${version}-darwin-arm64`);
+    if (!fs.existsSync(installed)) return t.skip(`本机未安装 ${version}`);
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-core-only-test-'));
+    t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+    const root = path.join(temporary, 'extension'), backups = path.join(temporary, 'backups');
+    const host = 'out/extension.js', web = `webview/assets/${asset}`;
+    const originals = new Map();
+    for (const file of ['package.json', host, 'webview/index.html', web]) {
+      const target = path.join(root, file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      originals.set(file, officialOriginal(version, installed, file));
+      fs.writeFileSync(target, originals.get(file));
+    }
+    const dry = patchExtension(root, 'dry-run', backups);
+    assert.equal(dry.status, 'ready');
+    assert.equal(dry.degraded, true);
+    assert.deepEqual(dry.files, [host, web]);
+    assert.equal(patchExtension(root, 'apply', backups).degraded, true);
+    const manifest = JSON.parse(fs.readFileSync(path.join(backups, fs.readdirSync(backups)[0], 'manifest.json'), 'utf8'));
+    assert.equal(manifest.mode, 'core-only');
+    assert.equal(manifest.patchVersion, require('../package.json').version);
+    const patchedHost = fs.readFileSync(path.join(root, host), 'utf8');
+    const patchedWeb = fs.readFileSync(path.join(root, web), 'utf8');
+    new vm.Script(patchedHost);
+    for (const marker of ['case"codex-multi-tab-title"', 'case"codex-multi-tab-route"', 'codexMultiTab.internalBridge']) {
+      assert.equal(patchedHost.split(marker).length, 2, marker);
+    }
+    const syntax = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: patchedWeb, encoding: 'utf8' });
+    assert.equal(syntax.status, 0, syntax.stderr);
+    if (location) {
+      const [exported, alias, react] = location;
+      assert.equal(patchedWeb.split(`${exported} as codexMultiTabOriginalLocation,`).length, 2);
+      assert.match(patchedWeb, new RegExp(`\\nfunction ${alias}\\(\\)\\{const location=codexMultiTabOriginalLocation\\(\\);${react}\\(\\)\\.useLayoutEffect\\(`));
+    }
+    if (nux) {
+      const [name, queryHook, authHook, nuxConstant] = nux;
+      verifyOnboardingGate(extractFunction(originals.get(web).toString(), name), extractFunction(patchedWeb, name),
+        name, queryHook, authHook, nuxConstant);
+    }
+    const already = patchExtension(root, 'dry-run', backups);
+    assert.equal(already.status, 'already-applied');
+    assert.equal(already.degraded, true);
+    assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
+    for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes);
+  });
+}

@@ -188,18 +188,22 @@ test('历史标签已创建尚未上报时可立即 reveal；首次真实路由�
 });
 
 test('真实 useLocation 包装只在 layout effect 提交后发送；丢弃渲染不改映射、不再 acquire API', () => {
-  for (const [version, exported, alias, api] of [
+  for (const [version, exported, alias, api, react = 'q'] of [
     ['26.5908.31748', 'xW', 'Qo', 'qf'],
     ['26.908.40401', 'xW', 'Zo', 'Jf'],
     ['26.917.61114', 'RZ', 'Hr', 'hp'],
+    ['26.1002.51308', 'lst', 'aa', 'qp', 'K'],
+    ['26.1007.21434', 'alt', 'ca', 'mm', 'X'],
   ]) {
     const source = transformSidebarWebview(`import{${exported} as ${alias},x as other}from"fixture";`, version);
     assert.equal(source.includes('acquireVsCodeApi'), false);
     const effects = [], messages = [], document = {};
     let location = { pathname: '/extension/panel/new' };
+    // 新版入口分块中的 q 是 atom 工厂；包装只能调用审计出的 React 访问器。
     const hook = vm.runInNewContext(`${source.slice(source.indexOf('\nfunction'))};${alias}`, {
       codexMultiTabOriginalLocation: () => location,
-      q: () => ({ useLayoutEffect(effect) { effects.push(effect); } }),
+      q: () => { if (react !== 'q') throw new Error('wrong accessor'); return { useLayoutEffect(effect) { effects.push(effect); } }; },
+      [react]: () => ({ useLayoutEffect(effect) { effects.push(effect); } }),
       [api]: { postMessage(message) { messages.push(message); } }, document,
     });
     assert.equal(hook(), location);

@@ -37,6 +37,10 @@ const PROFILES = {
   // have not been audited yet. Keep the optional patch set empty until that
   // work is complete instead of applying an older row/header transform.
   '26.917.62051': { baseOnly: true },
+  // The pinned-thread atom moved to a separate split chunk in these builds;
+  // the row/header/panel bundles still need their own audit.
+  '26.1002.51308': { baseOnly: true },
+  '26.1007.21434': { baseOnly: true },
 };
 
 function replaceOnce(source, anchor, replacement) {

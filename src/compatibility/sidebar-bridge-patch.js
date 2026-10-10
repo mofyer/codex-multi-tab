@@ -11,6 +11,11 @@ const PROFILES = {
     hostAnchor: 'e.push(Ue),e.push({dispose:LU', host: 'Ue', vscode: 'xt' },
   '26.917.62051': { exportedLocation: 'RZ', location: 'Hr', api: 'hp',
     hostAnchor: 'e.push(Ue),e.push({dispose:NU', host: 'Ue', vscode: 'xt' },
+  // 26.1002 起入口分块中的 q 不再是 React 访问器，按审计结果显式指定。
+  '26.1002.51308': { exportedLocation: 'lst', location: 'aa', api: 'qp', react: 'K',
+    hostAnchor: 'e.push(Pe),e.push({dispose:L3', host: 'Pe', vscode: 'Mt' },
+  '26.1007.21434': { exportedLocation: 'alt', location: 'ca', api: 'mm', react: 'X',
+    hostAnchor: 'e.push(Pe),e.push({dispose:j3', host: 'Pe', vscode: 'Mt' },
 };
 
 function replaceOnce(source, anchor, replacement) {
@@ -40,6 +45,8 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
   const accountLogins = new Map();
   let accountLoginStarting = false;
   let accountActivityRevision = 0;
+  let accountConnectionRevision = 0;
+  const accountActivityWatchers = new Set();
   let disposed = false;
   let sequence = 0;
   const validId = id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,200}$/.test(id);
@@ -62,7 +69,11 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
     onNotification(message) {
       const params = message?.params;
       if (!disposed && ((message?.method === 'thread/status/changed' && params?.status?.type === 'active')
-        || message?.method === 'turn/started')) accountActivityRevision++;
+        || message?.method === 'turn/started')) {
+        accountActivityRevision++;
+        // 检查期间开始活动的会话在复查时逐个读取，即使它不在当时的已加载分页中。
+        if (validId(params?.threadId)) for (const watcher of accountActivityWatchers) watcher.add(params.threadId);
+      }
       if (!disposed && message?.method === 'account/login/completed') {
         if (validId(params?.loginId) && typeof params.success === 'boolean'
           && (accountLogins.has(params.loginId) || accountLoginStarting)) {
@@ -90,6 +101,7 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
     },
     onFatalError() {
       accountActivityRevision++;
+      accountConnectionRevision++;
       for (const [id, login] of accountLogins) if (login.status === 'pending') rememberLogin(id, 'failed');
       for (const ticket of stopTickets.values()) clearTimeout(ticket.timer);
       stopTickets.clear();
@@ -233,43 +245,71 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
     finally { clearTimeout(timer); }
   }
 
+  /** 扫描连接中全部已加载会话及上一轮出现活动的会话，不限制项目、可见面板或侧栏历史页。 */
+  async function scanAccountActivity(call, extraIds) {
+    const cursors = new Set(), ids = new Set(extraIds);
+    let cursor;
+    for (let page = 0; page < 100; page++) {
+      const result = await call('thread/loaded/list', { limit: 100, ...(cursor ? { cursor } : {}) });
+      if (!Array.isArray(result?.data) || !result.data.every(validId)) return 'invalid';
+      for (const id of result.data) ids.add(id);
+      if (ids.size > 10000) return 'invalid';
+      if (result.nextCursor == null) break;
+      if (typeof result.nextCursor !== 'string' || !result.nextCursor || result.nextCursor.length > 8192
+        || cursors.has(result.nextCursor) || page === 99) return 'invalid';
+      cursor = result.nextCursor;
+      cursors.add(cursor);
+    }
+    const allIds = [...ids];
+    let background = false;
+    for (let index = 0; index < allIds.length; index += 10) {
+      const batch = allIds.slice(index, index + 10);
+      const results = await Promise.all(batch.map(threadId => call('thread/read', { threadId, includeTurns: false })));
+      for (let item = 0; item < results.length; item++) {
+        const thread = results[item]?.thread;
+        if (thread?.id !== batch[item]) return 'invalid';
+        if (thread.status?.type === 'active') {
+          // 官方标题、建议等后台生成使用不落盘的临时会话；侧边对话也可能如此，只等待结束，不忽略。
+          if (thread.ephemeral !== true) return 'running';
+          background = true;
+        } else if (!['idle', 'notLoaded'].includes(thread.status?.type)) return 'invalid';
+      }
+    }
+    return background ? 'background' : 'idle';
+  }
+
   async function accountSwitchPreflight() {
-    const unknown = { safe: false, message: '无法确认所有 Codex 会话均已停止，请稍后重试。' };
+    const unknown = { safe: false, reason: 'unknown', message: '无法确认所有 Codex 会话均已停止，请稍后重试。' };
     const deadline = Date.now() + timeoutMs;
-    const activityRevision = accountActivityRevision;
+    const connectionRevision = accountConnectionRevision;
+    const seen = new Set();
     const call = (method, params) => {
       const remaining = deadline - Date.now();
       if (disposed || remaining <= 0) throw failure('RPC_TIMEOUT');
       return rpc(method, params, true, remaining);
     };
+    accountActivityWatchers.add(seen);
     try {
-      const cursors = new Set(), ids = new Set();
-      let cursor;
-      for (let page = 0; page < 100; page++) {
-        const result = await call('thread/loaded/list', { limit: 100, ...(cursor ? { cursor } : {}) });
-        if (!Array.isArray(result?.data) || !result.data.every(validId)) return unknown;
-        for (const id of result.data) ids.add(id);
-        if (ids.size > 10000) return unknown;
-        if (result.nextCursor == null) break;
-        if (typeof result.nextCursor !== 'string' || !result.nextCursor || result.nextCursor.length > 8192
-          || cursors.has(result.nextCursor) || page === 99) return unknown;
-        cursor = result.nextCursor;
-        cursors.add(cursor);
-      }
-      // 扫描连接中全部已加载会话，不限制项目、可见面板或侧栏历史页。
-      const allIds = [...ids];
-      for (let index = 0; index < allIds.length; index += 10) {
-        const batch = allIds.slice(index, index + 10);
-        const results = await Promise.all(batch.map(threadId => call('thread/read', { threadId, includeTurns: false })));
-        for (let item = 0; item < results.length; item++) {
-          const thread = results[item]?.thread;
-          if (thread?.id !== batch[item]) return unknown;
-          if (thread.status?.type === 'active') return { safe: false, message: '仍有 Codex 会话正在运行，请先停止后再切换账号。' };
-          if (!['idle', 'notLoaded'].includes(thread.status?.type)) return unknown;
+      let sawBackground = false;
+      for (;;) {
+        const extraIds = [...seen];
+        seen.clear();
+        if (extraIds.length > 100) return unknown;
+        const activityRevision = accountActivityRevision;
+        let state;
+        try { state = await scanAccountActivity(call, extraIds); } catch { state = 'retry'; }
+        if (disposed || accountConnectionRevision !== connectionRevision || state === 'invalid') return unknown;
+        if (state === 'running') return { safe: false, reason: 'running', message: '仍有 Codex 会话正在运行，请先停止后再切换账号。' };
+        if (state === 'idle' && accountActivityRevision === activityRevision) return { safe: true };
+        // 临时后台会话、检查期间的新活动和刚结束会话的读取失败通常很快消失；在总时限内整轮复查。
+        if (state === 'background') sawBackground = true;
+        const wait = Math.min(1000, deadline - Date.now());
+        if (wait <= 0) {
+          return sawBackground ? { safe: false, reason: 'background', message: '官方 Codex 后台任务仍在运行，请稍后再切换账号。' } : unknown;
         }
+        await new Promise(resolve => setTimeout(resolve, wait));
       }
-      return disposed || accountActivityRevision !== activityRevision ? unknown : { safe: true };
-    } catch { return unknown; }
+    } finally { accountActivityWatchers.delete(seen); }
   }
 
   /** 初次补读元数据，此后复用官方通知；不拉取消息正文，也不每两秒扫描全部历史。 */
@@ -467,6 +507,7 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
       for (const ticket of stopTickets.values()) clearTimeout(ticket.timer);
       stopTickets.clear();
       accountLogins.clear();
+      accountActivityWatchers.clear();
       if (host.codexMultiTabSidebarBridge === bridge) delete host.codexMultiTabSidebarBridge;
     },
   };
@@ -481,8 +522,9 @@ function registerSidebarBridge(host, vscode, context, updatePins, timeoutMs = 15
 function transformSidebarHost(source, version = '26.908.40401') {
   const profile = PROFILES[version];
   if (!profile) throw new Error('此版本尚未审计侧栏路由桥');
+  const hostPush = `e.push(${profile.host}),`;
   source = replaceOnce(source, profile.hostAnchor,
-    `e.push(${profile.host}),(${registerSidebarBridge.toString()})(${profile.host},${profile.vscode},t,(${nativePinnedThreads.toString()})),e.push({dispose:${version === '26.917.61114' ? 'LU' : version === '26.917.62051' ? 'NU' : 'xB'}`);
+    `${hostPush}(${registerSidebarBridge.toString()})(${profile.host},${profile.vscode},t,(${nativePinnedThreads.toString()})),${profile.hostAnchor.slice(hostPush.length)}`);
   return replaceOnce(source, 'case"ready":break;case"persisted-atom-sync-request":',
     'case"codex-multi-tab-route":{this.codexMultiTabSidebarBridge?.trackRoute(e,r.pathname);break;}case"ready":break;case"persisted-atom-sync-request":');
 }
@@ -492,7 +534,7 @@ function transformSidebarWebview(source, version) {
   if (!profile) throw new Error('此版本尚未审计侧栏路由桥');
   source = replaceOnce(source, `${profile.exportedLocation} as ${profile.location},`,
     `${profile.exportedLocation} as codexMultiTabOriginalLocation,`);
-  return source + `\nfunction ${profile.location}(){const location=codexMultiTabOriginalLocation();q().useLayoutEffect(()=>{(${reportSidebarRoute.toString()})(${profile.api},location.pathname)},[location.pathname]);return location}\n`;
+  return source + `\nfunction ${profile.location}(){const location=codexMultiTabOriginalLocation();${profile.react ?? 'q'}().useLayoutEffect(()=>{(${reportSidebarRoute.toString()})(${profile.api},location.pathname)},[location.pathname]);return location}\n`;
 }
 
 module.exports = { registerSidebarBridge, reportSidebarRoute, transformSidebarHost, transformSidebarWebview };

@@ -6,7 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { registerSidebarBridge } = require('../src/compatibility/sidebar-bridge-patch');
 
-function fixture(t, respond = () => ({}), timeoutMs = 1000) {
+function fixture(t, respond = () => ({}), timeoutMs = 1000, timers = { setTimeout, clearTimeout }) {
   let callbacks;
   const sent = [];
   const host = {
@@ -28,12 +28,16 @@ function fixture(t, respond = () => ({}), timeoutMs = 1000) {
     },
   };
   const vscode = { env: {}, commands: { registerCommand() { return { dispose() {} }; } } };
-  const register = vm.runInNewContext(`(${registerSidebarBridge.toString()})`, { setTimeout, clearTimeout, URL, URLSearchParams, Date });
+  const register = vm.runInNewContext(`(${registerSidebarBridge.toString()})`, { ...timers, URL, URLSearchParams, Date });
   const bridge = register(host, vscode, { subscriptions: [] }, () => {}, timeoutMs);
   t.after(() => bridge.dispose());
   return { host, vscode, sent, bridge, notify: message => callbacks.onNotification(message),
-    call: request => bridge.handle(request) };
+    fatal: () => callbacks.onFatalError(), call: request => bridge.handle(request) };
 }
+
+// 只缩短切换前检查的一秒复查间隔；RPC 超时等其他计时保持原值。
+const fastRetry = { setTimeout: (callback, ms) => setTimeout(callback, ms === 1000 ? 5 : ms), clearTimeout };
+const loaded = (method, ids) => method === 'thread/loaded/list' ? { data: ids, nextCursor: null } : undefined;
 
 test('账号桥保持v1且仅开放专用action，RPC不可读取token/config或发起登录', async t => {
   const f = fixture(t);
@@ -237,4 +241,65 @@ test('检查期间其他会话开始运行或检查超时拒绝切换', async t 
   assert.equal((await f.call({ action: 'accountSwitchPreflight' })).safe, false);
   const timeout = fixture(t, () => undefined, 10);
   assert.equal((await timeout.call({ action: 'accountSwitchPreflight' })).safe, false);
+});
+
+test('官方后台临时会话结束后自动复查，一次点击即可通过', async t => {
+  let titleReads = 0;
+  const f = fixture(t, (method, params) => loaded(method, titleReads === 0 ? ['user', 'title'] : ['user'])
+    ?? (params.threadId === 'title' && ++titleReads
+      ? { thread: { id: 'title', ephemeral: true, status: { type: 'active', activeFlags: [] } } }
+      : { thread: { id: params.threadId, ephemeral: false, status: { type: 'idle' } } }), 5000, fastRetry);
+  const result = await f.call({ action: 'accountSwitchPreflight' });
+  assert.equal(result.safe, true);
+  assert.equal(result.reason, undefined);
+  assert.equal(f.sent.filter(request => request.method === 'thread/loaded/list').length, 2);
+});
+
+test('持久会话运行时立即拒绝并给出原因码，不等待复查', async t => {
+  const f = fixture(t, (method, params) => loaded(method, ['user'])
+    ?? { thread: { id: params.threadId, ephemeral: false, status: { type: 'active', activeFlags: [] } } }, 5000, fastRetry);
+  const result = await f.call({ action: 'accountSwitchPreflight' });
+  assert.equal(result.safe, false);
+  assert.equal(result.reason, 'running');
+  assert.equal(f.sent.filter(request => request.method === 'thread/loaded/list').length, 1);
+});
+
+test('临时会话持续运行到总时限仍拒绝，并区分后台任务原因', async t => {
+  const f = fixture(t, (method, params) => loaded(method, ['side'])
+    ?? { thread: { id: params.threadId, ephemeral: true, status: { type: 'active', activeFlags: [] } } }, 40);
+  const result = await f.call({ action: 'accountSwitchPreflight' });
+  assert.equal(result.safe, false);
+  assert.equal(result.reason, 'background');
+});
+
+test('检查期间新活动的会话在复查中逐个核对，空闲才放行', async t => {
+  for (const [type, ephemeral, expected] of [['idle', false, true], ['active', false, 'running']]) {
+    let lists = 0;
+    const f = fixture(t, (method, params) => {
+      if (method === 'thread/loaded/list') {
+        if (lists++ === 0) f.notify({ method: 'turn/started', params: { threadId: 'late', turn: { id: 'turn-late', status: 'inProgress' } } });
+        return { data: [], nextCursor: null };
+      }
+      return { thread: { id: params.threadId, ephemeral, status: { type } } };
+    }, 5000, fastRetry);
+    const result = await f.call({ action: 'accountSwitchPreflight' });
+    assert.ok(f.sent.some(request => request.method === 'thread/read' && request.params.threadId === 'late'));
+    if (expected === true) assert.equal(result.safe, true);
+    else assert.equal(result.reason, expected);
+  }
+});
+
+test('刚结束会话的瞬时读取失败会复查；连接中断立即拒绝', async t => {
+  let failures = 1;
+  const flaky = fixture(t, (method, params) => loaded(method, ['user'])
+    ?? (failures-- > 0 ? Promise.reject(new Error('gone')) : { thread: { id: params.threadId, ephemeral: false, status: { type: 'idle' } } }),
+  5000, fastRetry);
+  assert.equal((await flaky.call({ action: 'accountSwitchPreflight' })).safe, true);
+  const broken = fixture(t, method => {
+    if (method === 'thread/loaded/list') broken.fatal();
+    return loaded(method, []);
+  }, 5000, fastRetry);
+  const result = await broken.call({ action: 'accountSwitchPreflight' });
+  assert.equal(result.reason, 'unknown');
+  assert.equal(broken.sent.filter(request => request.method === 'thread/loaded/list').length, 1);
 });

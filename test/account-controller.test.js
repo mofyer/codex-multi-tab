@@ -78,6 +78,19 @@ test('active or unknown runtime and unlisted targets never write credentials', a
   assert.equal(app.stats().switched, 0);
 });
 
+test('preflight refusal explains fixed reason codes and ignores bridge-supplied text', async () => {
+  for (const [reason, expected] of [['running', /仍有 Codex 会话正在运行/], ['background', /后台任务/],
+    ['unknown', /无法确认运行状态时不会继续/], [undefined, /无法确认运行状态时不会继续/], ['toString', /无法确认运行状态时不会继续/]]) {
+    const app = setup({ bridge: request => request.action === 'accountSwitchPreflight'
+      ? { safe: false, reason, message: 'BRIDGE TEXT MUST NOT DISPLAY' } : undefined });
+    await app.init(); await app.controller.handle('switchAccount', profile.id);
+    assert.equal(app.stats().switched, 0);
+    assert.match(app.states.at(-1).message, expected);
+    assert.equal(JSON.stringify(app.states).includes('BRIDGE TEXT'), false);
+    assert.equal(app.controller.busy, false);
+  }
+});
+
 test('reload failure rolls back and errors never expose underlying token details', async () => {
   const app = setup({ reloadFails: true }); await app.init(); await app.controller.handle('switchAccount', profile.id);
   assert.equal(app.stats().rolledBack, 1);

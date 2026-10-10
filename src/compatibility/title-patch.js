@@ -45,6 +45,26 @@ const PROFILES = {
     webHash: 'ffdf480c63b5c99009ae0b618cad846ac5f33af42af4cec900f633586370a9dc',
     coreOnly: true,
   },
+  // 26.1002 起 webview 拆为多个 app-initial 分块；只修改持有 acquireVsCodeApi、
+  // 首次引导和 useLocation 导入的入口分块。原生历史分块尚未审计，保持降级。
+  '26.1002.51308': {
+    hostAnchor: 'case"navigate-in-new-editor-tab":{let n=QN(r.path);',
+    hostHash: 'bc0b44429768ea49c559c6a5524dcd710c500d6193f3bfe62c81cab75c18661c',
+    asset: 'webview/assets/app-initial-d277996860bb.js',
+    api: 'qp',
+    nuxAnchor: 'function CBi(){let{data:e,isLoading:t}=DC(au.NUX_2025_09_15),{authMethod:n}=jd();',
+    webHash: '1c843016a1334d3848e3ae4931ca2e9dbb649918d7ca7f8ea90ef09775aaf7c1',
+    coreOnly: true,
+  },
+  '26.1007.21434': {
+    hostAnchor: 'case"navigate-in-new-editor-tab":{let n=rF(r.path);',
+    hostHash: 'a8069de80c8f8141481d033f94c3a95e1b59f399143cb2554d3f68469dfbe5b8',
+    asset: 'webview/assets/app-initial-c014f9ee4429.js',
+    api: 'mm',
+    nuxAnchor: 'function FGi(){let{data:e,isLoading:t}=UC(hs.NUX_2025_09_15),{authMethod:n}=Lf();',
+    webHash: 'aabbfa7c366706365a239b090ca1c657b6a0213d7287e54ef0a32d1b2e5ff6a0',
+    coreOnly: true,
+  },
 };
 
 // 仅按消息来源定位辅助扩展面板，侧栏和其他编辑器不参与更新。

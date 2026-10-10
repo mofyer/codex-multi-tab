@@ -22,6 +22,10 @@ const environmentMessages = {
   CODEX_MULTI_TAB_ACCOUNT_INVALID_AUTH: '登录凭据格式无法安全识别，请先在官方 Codex 中重新登录。',
   CODEX_MULTI_TAB_ACCOUNT_NOT_FOUND: '已保存的账号不存在，请刷新账号列表。',
 };
+const preflightMessages = {
+  running: '仍有 Codex 会话正在运行。请先停止所有标签中的任务，再切换或添加账号。',
+  background: '官方 Codex 的后台任务（如标题或建议生成）仍在进行，已等待但未结束，请稍后重试。',
+};
 
 /** Credentials stay in the extension host. The webview receives only an explicit metadata projection. */
 function createAccountController(vscode, context, {
@@ -88,7 +92,9 @@ function createAccountController(vscode, context, {
   async function preflight() {
     const result = await bridge({ action: 'accountSwitchPreflight' });
     if (result?.safe !== true) {
-      message = '请先结束所有 Codex 标签中的运行任务后再切换或添加账号；无法确认运行状态时不会继续。';
+      // 只采用固定原因码映射本地文案；旧版连接桥没有原因码时保持原提示。
+      message = Object.hasOwn(preflightMessages, result?.reason) ? preflightMessages[result.reason]
+        : '请先结束所有 Codex 标签中的运行任务后再切换或添加账号；无法确认运行状态时不会继续。';
       emit();
       return false;
     }
