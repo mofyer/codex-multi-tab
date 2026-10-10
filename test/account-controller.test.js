@@ -91,12 +91,26 @@ test('preflight refusal explains fixed reason codes and ignores bridge-supplied 
   }
 });
 
-test('reload failure rolls back and errors never expose underlying token details', async () => {
+test('reload command rejected while the host terminates keeps the staged account', async () => {
+  // VS Code 重载会先终止扩展宿主，未完成的 executeCommand 被拒绝；此时立即回滚会把目标账号改回原账号。
   const app = setup({ reloadFails: true }); await app.init(); await app.controller.handle('switchAccount', profile.id);
+  assert.equal(app.stats().rolledBack, 0);
+  assert.equal(app.controller.busy, true);
+  assert.deepEqual(app.values.get('codexMultiTab.pendingAccountSwitch'), { id: profile.id, home: '/mock/codex' });
+  app.controller.dispose(); await app.tick();
+  assert.equal(app.stats().rolledBack, 0);
+  assert.deepEqual(app.values.get('codexMultiTab.pendingAccountSwitch'), { id: profile.id, home: '/mock/codex' });
+});
+
+test('reload failure in a surviving host rolls back after recovery and never exposes token details', async () => {
+  const app = setup({ reloadFails: true }); await app.init(); await app.controller.handle('switchAccount', profile.id);
+  assert.equal(app.stats().rolledBack, 0);
+  await app.tick();
   assert.equal(app.stats().rolledBack, 1);
   assert.equal(app.controller.busy, false);
   assert.equal(app.values.get('codexMultiTab.pendingAccountSwitch'), undefined);
-  assert.equal(app.errors.join().includes('TOKEN'), false);
+  assert.match(app.states.at(-1).message, /窗口未重载，已恢复原登录缓存/);
+  assert.equal(JSON.stringify([app.errors, app.states]).includes('TOKEN'), false);
 });
 
 test('switch failures explain known store errors without exposing exception details', async () => {
@@ -145,11 +159,18 @@ test('unknown and inherited error codes keep the generic safe operation message'
 });
 
 test('rollback failure takes precedence over the initial operation error', async () => {
-  const app = setup({ reloadFails: true, rollback: () => { throw new Error('PRIVATE_TOKEN'); } });
+  const app = setup({ stage: () => { throw new Error('failure'); }, rollback: () => { throw new Error('PRIVATE_TOKEN'); } });
   await app.init(); await app.controller.handle('switchAccount', profile.id);
-  assert.match(app.errors.at(-1), /切换未完成.*缓存已发生变化.*检查当前登录/);
-  assert.equal(app.states.at(-1).message, app.errors.at(-1));
-  assert.equal(JSON.stringify([app.errors, app.states]).includes('PRIVATE_TOKEN'), false);
+  assert.equal(app.stats().rolledBack, 0);
+  const staged = setup({ cleanupWarning: true, rollback: () => { throw new Error('PRIVATE_TOKEN'); } });
+  await staged.init(); await staged.controller.handle('switchAccount', profile.id);
+  assert.match(staged.errors.at(-1), /切换未完成.*缓存已发生变化.*检查当前登录/);
+  assert.equal(staged.states.at(-1).message, staged.errors.at(-1));
+  assert.equal(JSON.stringify([staged.errors, staged.states]).includes('PRIVATE_TOKEN'), false);
+  const reload = setup({ reloadFails: true, rollback: () => { throw new Error('PRIVATE_TOKEN'); } });
+  await reload.init(); await reload.controller.handle('switchAccount', profile.id); await reload.tick();
+  assert.match(reload.states.at(-1).message, /窗口未重载且未能恢复登录缓存/);
+  assert.equal(JSON.stringify([reload.errors, reload.states]).includes('PRIVATE_TOKEN'), false);
 });
 
 test('an open error notification does not hold the account operation busy', async () => {

@@ -246,9 +246,12 @@ function createAccountController(vscode, context, {
               if (disposed) { await staged.rollback(); return true; }
               message = '正在重载窗口以切换账号…';
               emit();
-              await vscode.commands.executeCommand('workbench.action.reloadWindow');
+              // 重载会先终止扩展宿主，未完成的命令调用随之被拒绝；不能据此立即回滚已写入的目标账号。
+              // 只有恢复计时结束时宿主仍存活，才判定窗口未重载并恢复原登录缓存。
               reloading = true;
-              if (!disposed) recoverCancelledReload(staged);
+              recoverCancelledReload(staged);
+              try { await vscode.commands.executeCommand('workbench.action.reloadWindow'); }
+              catch { /* 由恢复计时判定 */ }
             } else {
               await context.globalState.update(PENDING, undefined);
               message = '已经是当前账号。';
