@@ -41,6 +41,7 @@ const PROFILES = {
   // the row/header/panel bundles still need their own audit.
   '26.1002.51308': { baseOnly: true },
   '26.1007.21434': { baseOnly: true },
+  '26.51007.21434': { baseOnly: true },
 };
 
 function replaceOnce(source, anchor, replacement) {

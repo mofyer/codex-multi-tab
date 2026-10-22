@@ -384,6 +384,7 @@ const coreOnlyVersions = {
   '26.917.62051': { asset: 'app-initial-de4359f78ed1.js' },
   '26.1002.51308': { asset: 'app-initial-d277996860bb.js', nux: ['CBi', 'DC', 'jd', 'au'], location: ['lst', 'aa', 'K'] },
   '26.1007.21434': { asset: 'app-initial-c014f9ee4429.js', nux: ['FGi', 'UC', 'Lf', 'hs'], location: ['alt', 'ca', 'X'] },
+  '26.51007.21434': { asset: 'app-initial-41ab338a184f.js', nux: ['FGi', 'UC', 'Lf', 'hs'], location: ['alt', 'ca', 'X'] },
 };
 
 // 按括号边界截取压缩包中的单个函数，执行真实原函数与补丁后的函数。
@@ -412,9 +413,19 @@ function officialOriginal(version, installed, file) {
   return bytes;
 }
 
+function installedRoot(version) {
+  const fixture = process.env.CODEX_MULTI_TAB_OFFICIAL_ROOT;
+  if (fixture && fs.existsSync(path.join(fixture, 'package.json'))) {
+    try {
+      if (JSON.parse(fs.readFileSync(path.join(fixture, 'package.json'), 'utf8')).version === version) return fixture;
+    } catch { /* fall through to the normal installed extension path */ }
+  }
+  return path.join(os.homedir(), `.vscode/extensions/openai.chatgpt-${version}-darwin-arm64`);
+}
+
 for (const [version, { asset, nux, location }] of Object.entries(coreOnlyVersions)) {
   test(`${version} 核心资产可降级应用，原生历史未审计时仍可恢复`, t => {
-    const installed = path.join(os.homedir(), `.vscode/extensions/openai.chatgpt-${version}-darwin-arm64`);
+    const installed = installedRoot(version);
     if (!fs.existsSync(installed)) return t.skip(`本机未安装 ${version}`);
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-core-only-test-'));
     t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));

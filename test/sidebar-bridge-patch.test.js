@@ -194,6 +194,7 @@ test('真实 useLocation 包装只在 layout effect 提交后发送；丢弃渲�
     ['26.917.61114', 'RZ', 'Hr', 'hp'],
     ['26.1002.51308', 'lst', 'aa', 'qp', 'K'],
     ['26.1007.21434', 'alt', 'ca', 'mm', 'X'],
+    ['26.51007.21434', 'alt', 'ca', 'mm', 'X'],
   ]) {
     const source = transformSidebarWebview(`import{${exported} as ${alias},x as other}from"fixture";`, version);
     assert.equal(source.includes('acquireVsCodeApi'), false);

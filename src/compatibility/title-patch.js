@@ -65,6 +65,16 @@ const PROFILES = {
     webHash: 'aabbfa7c366706365a239b090ca1c657b6a0213d7287e54ef0a32d1b2e5ff6a0',
     coreOnly: true,
   },
+  // 26.51007.21434 保留宿主桥锚点，但 webview 入口分块重新生成；仅启用核心桥接。
+  '26.51007.21434': {
+    hostAnchor: 'case"navigate-in-new-editor-tab":{let n=rF(r.path);',
+    hostHash: 'a8069de80c8f8141481d033f94c3a95e1b59f399143cb2554d3f68469dfbe5b8',
+    asset: 'webview/assets/app-initial-41ab338a184f.js',
+    api: 'mm',
+    nuxAnchor: 'function FGi(){let{data:e,isLoading:t}=UC(hs.NUX_2025_09_15),{authMethod:n}=Lf();',
+    webHash: 'c755dbca916c0f830a554fe2e3057f8642b32394bea7701338e5d506f692ad56',
+    coreOnly: true,
+  },
 };
 
 // 仅按消息来源定位辅助扩展面板，侧栏和其他编辑器不参与更新。

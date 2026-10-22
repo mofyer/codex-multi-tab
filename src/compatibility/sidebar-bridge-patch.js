@@ -16,6 +16,8 @@ const PROFILES = {
     hostAnchor: 'e.push(Pe),e.push({dispose:L3', host: 'Pe', vscode: 'Mt' },
   '26.1007.21434': { exportedLocation: 'alt', location: 'ca', api: 'mm', react: 'X',
     hostAnchor: 'e.push(Pe),e.push({dispose:j3', host: 'Pe', vscode: 'Mt' },
+  '26.51007.21434': { exportedLocation: 'alt', location: 'ca', api: 'mm', react: 'X',
+    hostAnchor: 'e.push(Pe),e.push({dispose:j3', host: 'Pe', vscode: 'Mt' },
 };
 
 function replaceOnce(source, anchor, replacement) {
