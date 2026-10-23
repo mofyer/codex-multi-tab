@@ -10,6 +10,7 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const { patchExtension, transformHost, transformWebview, updatePanelTitle, observeTitle, waitForOnboardingState } = require('../src/compatibility/title-patch');
 const { getNativePatchFiles, getNativeDependencies } = require('../src/compatibility/native-history-patch');
+const { createCompatibilityManager } = require('../src/compatibility/compatibility-manager');
 
 test('旧补丁入口与源码入口共享 API，CLI 默认备份保留在扩展根目录', t => {
   assert.equal(require('../title-patch'), require('../src/compatibility/title-patch'));
@@ -379,7 +380,7 @@ for (const [version, asset] of Object.entries(versions)) {
   });
 }
 
-// 核心桥已审计、原生历史分块未审计的版本：只修改宿主和入口分块，可完整恢复。
+// 只提供核心资产，模拟原生历史分块未审计或缺失时的安全降级。
 const coreOnlyVersions = {
   '26.917.62051': { asset: 'app-initial-de4359f78ed1.js' },
   '26.1002.51308': { asset: 'app-initial-d277996860bb.js', nux: ['CBi', 'DC', 'jd', 'au'], location: ['lst', 'aa', 'K'] },
@@ -424,7 +425,7 @@ function installedRoot(version) {
 }
 
 for (const [version, { asset, nux, location }] of Object.entries(coreOnlyVersions)) {
-  test(`${version} 核心资产可降级应用，原生历史未审计时仍可恢复`, t => {
+  test(`${version} 核心资产可降级应用，原生历史资产不可用时仍可恢复`, t => {
     const installed = installedRoot(version);
     if (!fs.existsSync(installed)) return t.skip(`本机未安装 ${version}`);
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-core-only-test-'));
@@ -469,5 +470,194 @@ for (const [version, { asset, nux, location }] of Object.entries(coreOnlyVersion
     assert.equal(already.degraded, true);
     assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
     for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes);
+  });
+}
+
+for (const version of ['26.1007.21434', '26.51007.21434']) {
+  const asset = coreOnlyVersions[version].asset;
+  const coreFiles = ['out/extension.js', `webview/assets/${asset}`];
+
+  function fixture(t, coreOnly = false) {
+    const installed = installedRoot(version);
+    if (!fs.existsSync(installed)) {
+      t.skip(`本机未安装 ${version}`);
+      return;
+    }
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-native-migration-test-'));
+    t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+    const root = path.join(temporary, 'extension'), backups = path.join(temporary, 'backups');
+    const nativePatches = getNativePatchFiles(version);
+    const dependencies = getNativeDependencies(version);
+    assert.ok(nativePatches.length > 0, '已审计版本必须提供原生历史补丁');
+    assert.ok(dependencies.length > 0, '已审计版本必须校验原生历史依赖');
+    const files = [...new Set(['package.json', 'webview/index.html', ...coreFiles,
+      ...nativePatches.map(item => item.file), ...dependencies.map(item => item.file)])];
+    const originals = new Map(files.map(file => [file, officialOriginal(version, installed, file)]));
+    function writeOriginal(file) {
+      const target = path.join(root, file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, originals.get(file));
+    }
+    for (const file of coreOnly ? ['package.json', 'webview/index.html', ...coreFiles] : files) writeOriginal(file);
+    return { root, backups, nativePatches, dependencies, files, originals, writeOriginal };
+  }
+
+  test(`${version} 真实全量资产：原生历史应用、幂等、语法检查及逐字节恢复`, t => {
+    const data = fixture(t);
+    if (!data) return;
+    const { root, backups, nativePatches, dependencies, originals } = data;
+    const expected = [...new Set([...coreFiles, ...nativePatches.map(item => item.file)])];
+    const dry = patchExtension(root, 'dry-run', backups);
+    assert.equal(dry.status, 'ready');
+    assert.equal(dry.degraded, false);
+    assert.deepEqual(dry.files, expected);
+    assert.equal(fs.existsSync(backups), false);
+    const applied = patchExtension(root, 'apply', backups);
+    assert.equal(applied.status, 'applied');
+    assert.equal(applied.degraded, false);
+    assert.deepEqual(applied.files, expected);
+    const manifestPath = path.join(backups, fs.readdirSync(backups)[0], 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    assert.notEqual(manifest.mode, 'core-only');
+    assert.deepEqual(manifest.files.map(entry => entry.file), expected);
+    const patched = new Map(expected.map(file => [file, fs.readFileSync(path.join(root, file))]));
+    for (const [file, bytes] of patched) {
+      assert.notDeepEqual(bytes, originals.get(file), file);
+      const syntax = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: bytes, encoding: 'utf8' });
+      assert.equal(syntax.status, 0, `${file}: ${syntax.stderr}`);
+    }
+    for (const action of ['dry-run', 'apply']) {
+      const repeated = patchExtension(root, action, backups);
+      assert.equal(repeated.status, 'already-applied');
+      assert.equal(repeated.degraded, false);
+      for (const [file, bytes] of patched) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+    }
+    for (const dependency of dependencies) {
+      if (!patched.has(dependency.file)) assert.deepEqual(fs.readFileSync(path.join(root, dependency.file)), originals.get(dependency.file));
+    }
+    assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
+    for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+    assert.equal(patchExtension(root, 'restore', backups).status, 'not-applied');
+  });
+
+  test(`${version} core-only 安全迁移为全量增强，损坏资产和备份不得触发覆盖`, t => {
+    const data = fixture(t, true);
+    if (!data) return;
+    const { root, backups, dependencies, files, originals, writeOriginal } = data;
+    const initial = patchExtension(root, 'apply', backups);
+    assert.equal(initial.status, 'applied');
+    assert.equal(initial.degraded, true);
+    const corePatched = new Map(coreFiles.map(file => [file, fs.readFileSync(path.join(root, file))]));
+    const backup = path.join(backups, fs.readdirSync(backups)[0]);
+    const manifestPath = path.join(backup, 'manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    assert.equal(manifest.mode, 'core-only');
+    manifest.patchVersion = '0.5.8';
+    const manifestBytes = Buffer.from(JSON.stringify(manifest));
+    fs.writeFileSync(manifestPath, manifestBytes);
+    for (const file of files) if (!fs.existsSync(path.join(root, file))) writeOriginal(file);
+
+    // 新增分块的依赖不可信时，保留已验证的核心补丁，不自动恢复或升级。
+    const dependency = dependencies.find(item => !coreFiles.includes(item.file));
+    assert.ok(dependency, '需要独立原生历史依赖');
+    const dependencyPath = path.join(root, dependency.file);
+    fs.appendFileSync(dependencyPath, '\n// 外部变更');
+    const changedDependency = fs.readFileSync(dependencyPath);
+    for (const action of ['dry-run', 'apply']) {
+      const degraded = patchExtension(root, action, backups);
+      assert.equal(degraded.status, 'already-applied');
+      assert.equal(degraded.degraded, true);
+      assert.deepEqual(fs.readFileSync(dependencyPath), changedDependency);
+      for (const [file, bytes] of corePatched) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes);
+    }
+    writeOriginal(dependency.file);
+
+    // 有可升级资产也必须先验证原备份和当前文件，再允许 REAPPLY_REQUIRED。
+    const backupPath = path.join(backup, manifest.files[0].backup);
+    const originalBackup = fs.readFileSync(backupPath);
+    fs.appendFileSync(backupPath, '\ncorrupted');
+    for (const action of ['dry-run', 'apply', 'restore']) {
+      assert.throws(() => patchExtension(root, action, backups), /备份内容校验失败/);
+      for (const [file, bytes] of corePatched) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes);
+    }
+    fs.writeFileSync(backupPath, originalBackup);
+    const host = path.join(root, coreFiles[0]);
+    fs.appendFileSync(host, '\n// 外部变更');
+    const changedHost = fs.readFileSync(host);
+    for (const action of ['dry-run', 'apply', 'restore']) {
+      assert.throws(() => patchExtension(root, action, backups), /拒绝覆盖/);
+      assert.deepEqual(fs.readFileSync(host), changedHost);
+    }
+    fs.writeFileSync(host, corePatched.get(coreFiles[0]));
+    fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, patchVersion: '99.0.0' }));
+    for (const action of ['dry-run', 'apply', 'restore']) {
+      assert.throws(() => patchExtension(root, action, backups), error => error.code === 'CODEX_MULTI_TAB_NEWER_PATCH_PRESENT');
+      for (const [file, bytes] of corePatched) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes);
+    }
+    fs.writeFileSync(manifestPath, manifestBytes);
+
+    for (const action of ['dry-run', 'apply']) {
+      assert.throws(() => patchExtension(root, action, backups), error => error.code === 'CODEX_MULTI_TAB_REAPPLY_REQUIRED');
+      assert.deepEqual(fs.readFileSync(manifestPath), manifestBytes);
+      for (const [file, bytes] of corePatched) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes);
+    }
+    assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
+    for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+    const full = patchExtension(root, 'apply', backups);
+    assert.equal(full.status, 'applied');
+    assert.equal(full.degraded, false);
+    assert.ok(full.files.length > coreFiles.length);
+    assert.equal(patchExtension(root, 'apply', backups).status, 'already-applied');
+    assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
+    for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+  });
+
+  test(`${version} 兼容管理器自动迁移真实核心补丁，提示完整增强且不自动重载`, async t => {
+    const data = fixture(t, true);
+    if (!data) return;
+    const { root, files, originals, writeOriginal } = data;
+    const storage = path.dirname(data.backups);
+    const backups = path.join(storage, 'patch-backups');
+    assert.equal(patchExtension(root, 'apply', backups).degraded, true);
+    for (const file of files) if (!fs.existsSync(path.join(root, file))) writeOriginal(file);
+    const actions = [], warnings = [], notices = [], commands = [];
+    let listenerDisposed = false;
+    const vscode = {
+      extensions: {
+        getExtension: () => ({ extensionPath: root, packageJSON: { version } }),
+        onDidChange: () => ({ dispose() { listenerDisposed = true; } }),
+      },
+      window: {
+        showWarningMessage: async message => { warnings.push(message); },
+        showInformationMessage: async (message, button) => { notices.push({ message, button }); },
+      },
+      commands: { executeCommand: async command => { commands.push(command); } },
+    };
+    const manager = createCompatibilityManager(vscode, { globalStorageUri: { fsPath: storage } },
+      (directory, action, backupRoot) => {
+        actions.push(action);
+        assert.equal(directory, root);
+        assert.equal(backupRoot, backups);
+        return patchExtension(directory, action, backupRoot);
+      });
+    t.after(() => manager.dispose());
+    await manager.requestCheck();
+    assert.deepEqual(actions.slice(0, 4), ['dry-run', 'restore', 'dry-run', 'apply']);
+    assert.equal(actions.filter(action => action === 'apply').length, 1);
+    assert.deepEqual(warnings, []);
+    assert.equal(notices.length, 1);
+    assert.match(notices[0].message, /增强已适配当前官方扩展/);
+    assert.doesNotMatch(notices[0].message, /暂不可用/);
+    assert.equal(notices[0].button, '重载窗口');
+    assert.deepEqual(commands, []);
+    const result = patchExtension(root, 'dry-run', backups);
+    assert.equal(result.status, 'already-applied');
+    assert.equal(result.degraded, false);
+    await manager.requestCheck();
+    assert.equal(notices.length, 1);
+    manager.dispose();
+    assert.equal(listenerDisposed, true);
+    assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
+    for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
   });
 }

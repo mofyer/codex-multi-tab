@@ -63,9 +63,8 @@ const PROFILES = {
     api: 'mm',
     nuxAnchor: 'function FGi(){let{data:e,isLoading:t}=UC(hs.NUX_2025_09_15),{authMethod:n}=Lf();',
     webHash: 'aabbfa7c366706365a239b090ca1c657b6a0213d7287e54ef0a32d1b2e5ff6a0',
-    coreOnly: true,
   },
-  // 26.51007.21434 保留宿主桥锚点，但 webview 入口分块重新生成；仅启用核心桥接。
+  // 此两版原生历史及分块依赖已单独审计，哈希不匹配时仍只启用核心桥。
   '26.51007.21434': {
     hostAnchor: 'case"navigate-in-new-editor-tab":{let n=rF(r.path);',
     hostHash: 'a8069de80c8f8141481d033f94c3a95e1b59f399143cb2554d3f68469dfbe5b8',
@@ -73,7 +72,6 @@ const PROFILES = {
     api: 'mm',
     nuxAnchor: 'function FGi(){let{data:e,isLoading:t}=UC(hs.NUX_2025_09_15),{authMethod:n}=Lf();',
     webHash: 'c755dbca916c0f830a554fe2e3057f8642b32394bea7701338e5d506f692ad56',
-    coreOnly: true,
   },
 };
 
@@ -223,14 +221,19 @@ function patchExtensionUnlocked(directory, action, backupRoot) {
   const nativePatches = getNativePatchFiles(profileVersion);
   const nativeCompatible = action === 'restore' || (nativePatches.length > 0 && nativePatches.every(patch => {
     const file = path.join(root, patch.file);
-    return fs.existsSync(file) && hash(fs.readFileSync(file)) === patch.originalHash;
+    if (!fs.existsSync(file)) return false;
+    const currentHash = hash(fs.readFileSync(file));
+    if (currentHash === patch.originalHash) return true;
+    const saved = Array.isArray(savedManifest?.files) ? savedManifest.files.find(entry => entry.file === patch.file) : undefined;
+    // 这里只识别旧补丁；下方 entries 会独立校验每一份备份和当前文件。
+    return saved?.originalHash === patch.originalHash && saved.patchedHash === currentHash;
   }) && getNativeDependencies(profileVersion).every(dependency => {
     const file = path.join(root, dependency.file);
     return fs.existsSync(file) && hash(fs.readFileSync(file)) === dependency.originalHash;
   }));
-  const degraded = profile.coreOnly === true || savedManifest?.mode === 'core-only'
+  const degraded = profile.coreOnly === true || (savedManifest?.mode === 'core-only' && (action === 'restore' || !nativeCompatible))
     || (!savedManifest && action !== 'restore' && !nativeCompatible);
-  const patches = degraded ? [...corePatches] : [...corePatches, ...nativePatches];
+  const patches = [...corePatches];
   if (degraded && savedManifest && savedManifest.mode !== 'core-only') {
     throw new Error('新增补丁资产不兼容，保留已有增强');
   }
@@ -267,6 +270,7 @@ function patchExtensionUnlocked(directory, action, backupRoot) {
       fs.rmSync(backup, { recursive: true });
       return { status: 'restored', version: pkg.version, files: entries.map(entry => entry.file) };
     }
+    if (!degraded && !nativeCompatible) throw new Error('原生历史依赖资产不兼容，保留已有增强');
     for (const patch of patches.slice(entries.length)) {
       const file = path.join(root, patch.file);
       if (!fs.existsSync(file) || hash(fs.readFileSync(file)) !== patch.originalHash) {

@@ -40,8 +40,28 @@ const PROFILES = {
   // The pinned-thread atom moved to a separate split chunk in these builds;
   // the row/header/panel bundles still need their own audit.
   '26.1002.51308': { baseOnly: true },
-  '26.1007.21434': { baseOnly: true },
-  '26.51007.21434': { baseOnly: true },
+  '26.1007.21434': {
+    splitHistory: true,
+    hostHash: 'a8069de80c8f8141481d033f94c3a95e1b59f399143cb2554d3f68469dfbe5b8',
+    broadcast: 'this.broadcastPersistedAtomUpdate(F,V)', broadcastKey: 'F',
+    navigation: 'case"navigate-in-new-editor-tab":{let n=rF(r.path);', vscode: 'je',
+    app: 'app-initial-c014f9ee4429.js', appHash: 'aabbfa7c366706365a239b090ca1c657b6a0213d7287e54ef0a32d1b2e5ff6a0',
+    header: 'header-57b689833777.js', headerHash: '622be3a466733cc74785df39c2fcad3005b288485538b14347a6573ebe098037',
+    headerWrapper: 'header-906a88f614e6.js', wrapperHash: '933121d3eba6e95cdd27938e9c79a1f08e2eb947f23000dd1fa5eac1aa993061',
+    panel: 'new-thread-panel-page-2f608bfe5aaf.js', panelHash: 'f5dc9c73cff588eb2f2c1382bc48e0774a200c5a398c7f2861cf770ad5a86d38', panelChildren: 'f,C', panelJsx: 'F',
+    dependencies: [["app-initial-97d3534ad35f.js","47e9e488122cf37a6564ed57d11f499d9ac062b2e49db729091fe3c163a64b49"],["app-initial-7a199c66e670.js","59b909377a370e09cb8523ab99a1f4ff282a0126527bd339db31e6d9ac7c9c26"]],
+  },
+  '26.51007.21434': {
+    splitHistory: true,
+    hostHash: 'a8069de80c8f8141481d033f94c3a95e1b59f399143cb2554d3f68469dfbe5b8',
+    broadcast: 'this.broadcastPersistedAtomUpdate(F,V)', broadcastKey: 'F',
+    navigation: 'case"navigate-in-new-editor-tab":{let n=rF(r.path);', vscode: 'je',
+    app: 'app-initial-41ab338a184f.js', appHash: 'c755dbca916c0f830a554fe2e3057f8642b32394bea7701338e5d506f692ad56',
+    header: 'header-4afcdefd370e.js', headerHash: '022eaeedf487b166d532b322e83367ac42364728e12a46971a32f80aaa77beda',
+    headerWrapper: 'header-5c55f78da8da.js', wrapperHash: 'cb04a4904fbb05fd16bbeaa256f41fa4c909d006688480d968530c285bd6bd11',
+    panel: 'new-thread-panel-page-5d143ae20d2e.js', panelHash: 'f9a43d18f38bcdf49bf196f252beac929768afeaf494e888b781d9f4c787f7a0', panelChildren: 'f,C', panelJsx: 'F',
+    dependencies: [["app-initial-c4ebaa710049.js","50e2af3d8c3d0e3c52612beb2d95940cc818dfe979d6d85a9fa61af5526640bc"],["app-initial-fee819fe4f22.js","460201045b5f5a4255fda737c9baa4768367a973d735cb37f3467bfe6af95316"]],
+  },
 };
 
 function replaceOnce(source, anchor, replacement) {
@@ -117,13 +137,14 @@ function transformNativeHost(source, profile) {
   source = replaceOnce(source, pins,
     `"list-pinned-threads":async()=>(${nativePinnedThreads.toString()})(this.globalState),"set-thread-pinned":async e=>(${nativePinnedThreads.toString()})(this.globalState,e)`);
   const broadcast = profile.broadcast ?? 'this.broadcastPersistedAtomUpdate(he,be)';
-  source = replaceOnce(source, broadcast, `${broadcast},${profile.broadcast ? 'se' : 'he'}==="pinned-thread-ids"&&this.broadcastToAllViews({type:"pinned-threads-updated"})`);
+  source = replaceOnce(source, broadcast, `${broadcast},${profile.broadcastKey ?? (profile.broadcast ? 'se' : 'he')}==="pinned-thread-ids"&&this.broadcastToAllViews({type:"pinned-threads-updated"})`);
   const navigation = profile.navigation ?? 'case"navigate-in-new-editor-tab":{let n=pI(r.path);';
   return replaceOnce(source, navigation,
     `case"navigate-in-new-editor-tab":{if(await (${navigateHistoryInPlace.toString()})(this,${profile.vscode ?? 'Ie'},e,r))break;${navigation.slice('case"navigate-in-new-editor-tab":{'.length)}`);
 }
 
 function transformNativeApp(source, profile) {
+  if (profile.splitHistory) return transformSplitNativeApp(source);
   const modern = profile.row === 'YBn';
   const rowProps = modern ? 'setPendingWorktreePinned:v,threadSummary:y,...b}=e,x='
     : 'setPendingWorktreePinned:_,threadSummary:v,...y}=e,b=';
@@ -147,7 +168,45 @@ function transformNativeApp(source, profile) {
   return source + addition;
 }
 
+// 26.1007 / 26.51007 的原生行仍在入口块；状态运行时拆到依赖块。
+// 使用官方 SE 查询派生状态和 zG 更新，保持侧栏与历史共用置顶数据。
+function transformSplitNativeApp(source) {
+  source = replaceOnce(source, 'setPendingWorktreePinned:C,threadSummary:w,...T}=e',
+    'setPendingWorktreePinned:C,threadSummary:w,codexMultiTabHistory:codexHistory,...T}=e');
+  source = replaceOnce(source, 'It=e=>{if($e.disabled===!0)',
+    'It=e=>{if(codexHistory)return CQ({pin:OQ({isPinned:P.get(SE).includes(r),onPinnedChange:e=>zG(P,r,e)}),rename:{id:`rename-thread`,onSelect:wt}});if($e.disabled===!0)');
+  source = replaceOnce(source, 'getMenuItems:Bt||$e.disabled===!0?()=>Lt(`row-actions`):void 0',
+    'getMenuItems:codexHistory||Bt||$e.disabled===!0?()=>Lt(`row-actions`):void 0');
+  // 不为 IDE 的有限菜单预加载桌面项目管理数据。
+  source = replaceOnce(source, 'Pt=async()=>{await Promise.all([JMr(P),c?tut(P):void 0])}',
+    'Pt=async()=>{if(codexHistory)return;await Promise.all([JMr(P),c?tut(P):void 0])}');
+  return source + `\nfunction codexMultiTabHistoryInit(){l$();CE()}\nfunction codexMultiTabHistoryRow(props){let pins=K(SE);let enhanced=(${isHelperDocument.toString()})();return(0,c$.jsx)(enhanced?MFr:Gjr,enhanced?{...props,codexMultiTabHistory:true,isPinned:pins.includes(props.conversationId),canPin:true,showPinActionOnHover:true}:props)}\nexport{codexMultiTabHistoryRow,codexMultiTabHistoryInit,SE as codexMultiTabPinnedIds};\n`;
+}
+
+function transformSplitNativeHeader(source, profile) {
+  source = `import{codexMultiTabHistoryRow,codexMultiTabHistoryInit,codexMultiTabPinnedIds}from"./${profile.app}";\n` + source;
+  source = replaceOnce(source, 'Dn=e((()=>{Cn=x(),', 'Dn=e((()=>{codexMultiTabHistoryInit(),Cn=x(),');
+  for (const anchor of [
+    '(0,Z.jsx)(qe,{conversationId:n,hostId:r,isActive:a,metaContent:c,onClick:o,onActiveArchiveStart:s})',
+    '(0,Z.jsx)(qe,{conversationId:n.conversation.id,hostId:n.conversation.hostId,isActive:r,metaContent:e,onClick:i,onActiveArchiveStart:a})',
+  ]) source = replaceOnce(source, anchor, anchor.replace('(qe,', '(codexMultiTabHistoryRow,'));
+  source = replaceOnce(source, 'function vn(e){let t=(0,Cn.c)(34),',
+    'function vn(e){let codexPins=l(codexMultiTabPinnedIds);let t=(0,Cn.c)(35),');
+  source = replaceOnce(source, ':O,L;',
+    `:O;let codexPartition=(${partitionNativeHistory.toString()})(I,F,codexPins,(${isHelperDocument.toString()})()&&b!==\`cloud\`);I=codexPartition.items;F=codexPartition.conversations;let L;`);
+  const group = '(0,Z.jsxs)(Z.Fragment,{children:[(0,Z.jsx)(`div`,{className:`px-[var(--padding-row-x)] py-1 text-sm text-tertiary`,children:`已置顶`}),...codexPartition.pinned.map(item=>(0,Z.jsx)(En,{item,isActive:item.conversation.id===x,onClose:a,onActiveArchiveStart:h},item.key))]})';
+  source = replaceOnce(source, 'children:[te,re,ie]', `children:[codexPartition.pinned.length>0?${group}:null,te,re,ie]`);
+  // 分组数组每次重新派生，包含最新会话元数据；全已置顶时也重绘活动行及回调。
+  source = replaceOnce(source, 't[24]!==B.Section||t[25]!==te||t[26]!==re||t[27]!==ie?',
+    't[34]!==codexPartition.pinned||t[24]!==B.Section||t[25]!==te||t[26]!==re||t[27]!==ie?');
+  source = replaceOnce(source, 't[27]=ie,t[28]=V', 't[27]=ie,t[34]=codexPartition.pinned,t[28]=V');
+  const localEmpty = 'F.length?F.map(e=>(0,Z.jsx)(Tn,{conversationId:e.id,hostId:e.hostId,updatedAt:e.recencyAt??e.updatedAt,isActive:x===e.id,onClose:a,onActiveArchiveStart:h},e.id)):M?';
+  source = replaceOnce(source, localEmpty, localEmpty.replace(':M?', ':codexPartition.pinned.length>0?null:M?'));
+  return replaceOnce(source, 'I.length===0?M?', 'I.length===0?codexPartition.pinned.length>0?null:M?');
+}
+
 function transformNativeHeader(source, profile) {
+  if (profile.splitHistory) return transformSplitNativeHeader(source, profile);
   source = `import{codexMultiTabHistoryRow,codexMultiTabHistoryInit,codexMultiTabPinnedIds}from"./${profile.app}";\n` + source;
   const initAnchor = profile.headerInitAnchor ?? 'Mn=e((()=>{On=C(),';
   source = replaceOnce(source, initAnchor, initAnchor.replace('On=', 'codexMultiTabHistoryInit(),On='));
@@ -190,7 +249,8 @@ function getNativeDependencies(version) {
   const profile = PROFILES[version];
   if (!profile) throw new Error('此版本尚未审计原生历史依赖');
   if (profile.baseOnly) return [];
-  return [{ file: `webview/assets/${profile.headerWrapper}`, originalHash: profile.wrapperHash }];
+  return [{ file: `webview/assets/${profile.headerWrapper}`, originalHash: profile.wrapperHash },
+    ...(profile.dependencies ?? []).map(([file, originalHash]) => ({ file: `webview/assets/${file}`, originalHash }))];
 }
 
 module.exports = { getNativePatchFiles, getNativeDependencies, isHelperDocument, nativePinnedThreads, navigateHistoryInPlace, partitionNativeHistory };
