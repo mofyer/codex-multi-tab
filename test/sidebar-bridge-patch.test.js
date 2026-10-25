@@ -188,16 +188,24 @@ test('历史标签已创建尚未上报时可立即 reveal；首次真实路由�
 });
 
 test('真实 useLocation 包装只在 layout effect 提交后发送；丢弃渲染不改映射、不再 acquire API', () => {
-  for (const [version, exported, alias, api, react = 'q'] of [
+  const messageBus = 'import{i as I,n as ye,r as be}from"./message-bus-4113ba7287d7.js"';
+  for (const [version, exported, alias, api, react = 'q', extra = ''] of [
     ['26.5908.31748', 'xW', 'Qo', 'qf'],
     ['26.908.40401', 'xW', 'Zo', 'Jf'],
     ['26.917.61114', 'RZ', 'Hr', 'hp'],
     ['26.1002.51308', 'lst', 'aa', 'qp', 'K'],
     ['26.1007.21434', 'alt', 'ca', 'mm', 'X'],
     ['26.51007.21434', 'alt', 'ca', 'mm', 'X'],
+    // 26.1021 的路由分块不持有 API，改为从 message-bus 已有导出 c 读取。
+    ['26.1021.22027', 'E', 'W', 'codexMultiTabApi', 'N', `${messageBus};`],
   ]) {
-    const source = transformSidebarWebview(`import{${exported} as ${alias},x as other}from"fixture";`, version);
+    const source = transformSidebarWebview(`import{${exported} as ${alias},x as other}from"fixture";${extra}`, version);
     assert.equal(source.includes('acquireVsCodeApi'), false);
+    if (extra) {
+      assert.equal(source.split(messageBus.replace('import{', `import{c as ${api},`)).length, 2);
+      assert.throws(() => transformSidebarWebview(`import{${exported} as ${alias},x as other}from"fixture";`, version), /特征/);
+      assert.throws(() => transformSidebarWebview(`import{${exported} as ${alias},x as other}from"fixture";${extra}${extra}`, version), /特征/);
+    }
     const effects = [], messages = [], document = {};
     let location = { pathname: '/extension/panel/new' };
     // 新版入口分块中的 q 是 atom 工厂；包装只能调用审计出的 React 访问器。

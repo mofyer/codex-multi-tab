@@ -18,6 +18,10 @@ const PROFILES = {
     hostAnchor: 'e.push(Pe),e.push({dispose:j3', host: 'Pe', vscode: 'Mt' },
   '26.51007.21434': { exportedLocation: 'alt', location: 'ca', api: 'mm', react: 'X',
     hostAnchor: 'e.push(Pe),e.push({dispose:j3', host: 'Pe', vscode: 'Mt' },
+  // 26.1021 起 useLocation 调用方在 app-runtime 分块；VS Code API 改由 message-bus 分块导出 c。
+  '26.1021.22027': { exportedLocation: 'E', location: 'W', api: 'codexMultiTabApi', react: 'N',
+    apiImport: { anchor: 'import{i as I,n as ye,r as be}from"./message-bus-4113ba7287d7.js"', binding: 'c' },
+    hostAnchor: 'e.push($e),e.push({dispose:cj', host: '$e', vscode: 'Ot' },
 };
 
 function replaceOnce(source, anchor, replacement) {
@@ -536,6 +540,10 @@ function transformSidebarWebview(source, version) {
   if (!profile) throw new Error('此版本尚未审计侧栏路由桥');
   source = replaceOnce(source, `${profile.exportedLocation} as ${profile.location},`,
     `${profile.exportedLocation} as codexMultiTabOriginalLocation,`);
+  if (profile.apiImport) {
+    const { anchor, binding } = profile.apiImport;
+    source = replaceOnce(source, anchor, anchor.replace('import{', `import{${binding} as ${profile.api},`));
+  }
   return source + `\nfunction ${profile.location}(){const location=codexMultiTabOriginalLocation();${profile.react ?? 'q'}().useLayoutEffect(()=>{(${reportSidebarRoute.toString()})(${profile.api},location.pathname)},[location.pathname]);return location}\n`;
 }
 

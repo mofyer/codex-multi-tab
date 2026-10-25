@@ -8,7 +8,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
-const { patchExtension, transformHost, transformWebview, updatePanelTitle, observeTitle, waitForOnboardingState } = require('../src/compatibility/title-patch');
+const { patchExtension, getCorePatches, transformHost, transformWebview, updatePanelTitle, observeTitle, waitForOnboardingState } = require('../src/compatibility/title-patch');
 const { getNativePatchFiles, getNativeDependencies } = require('../src/compatibility/native-history-patch');
 const { createCompatibilityManager } = require('../src/compatibility/compatibility-manager');
 
@@ -194,6 +194,72 @@ test('新版 webview 仅在引导查询成功后进入首次引导判断', () =>
   assert.equal(after(), undefined);
   state = { ...state, status: 'success' };
   assert.equal(after(), '2025-09-15-full-chatgpt-auth');
+});
+
+const ideNuxFixture = 'function v(){let{data:e,isLoading:t}=a(g),{authMethod:n}=f();if(l?.ideOnboarding==null)return`none`;if(!t)return e?.completed||n==null?`none`:n===`chatgptAuthTokens`||n===`chatgpt`?`2025-09-15-full-chatgpt-auth`:`2025-09-15-apikey-auth`}';
+
+// 26.1021 的引导数据为 { completed }；IDE 无引导服务时官方直接跳过，门控须在该判断之后。
+function verifyIdeOnboardingGate(original, patched) {
+  let state, authMethod = 'chatgpt';
+  const context = { document: browserFixture().doc, URLSearchParams, g: 'ide-onboarding', l: { ideOnboarding: {} },
+    a(query) { assert.equal(query, 'ide-onboarding'); return state; }, f() { return { authMethod }; } };
+  const before = vm.runInNewContext(`${original};v`, context);
+  const after = vm.runInNewContext(`${patched};v`, context);
+  const failure = new Error('读取引导状态失败');
+  const pending = { status: 'pending', fetchStatus: 'idle', isLoading: false, data: undefined };
+  const incomplete = { status: 'success', fetchStatus: 'idle', isLoading: false, data: { completed: false } };
+  const failed = { status: 'error', fetchStatus: 'idle', isLoading: false, data: undefined, error: failure };
+  state = pending;
+  assert.equal(before(), '2025-09-15-full-chatgpt-auth');
+  assert.equal(after(), undefined);
+  state = { status: 'pending', fetchStatus: 'fetching', isLoading: true, data: undefined };
+  assert.equal(after(), undefined);
+  state = { ...incomplete, data: { completed: true } };
+  assert.equal(after(), 'none');
+  state = incomplete;
+  assert.equal(after(), '2025-09-15-full-chatgpt-auth');
+  authMethod = 'apikey';
+  assert.equal(after(), '2025-09-15-apikey-auth');
+  state = failed;
+  assert.throws(after, error => error === failure);
+  // 查询因无服务而保持禁用的 pending 时，辅助标签也必须按官方结果放行。
+  context.l = { ideOnboarding: null };
+  for (const next of [pending, failed]) {
+    state = next;
+    assert.equal(after(), 'none');
+    assert.equal(after(), before());
+  }
+  context.l = { ideOnboarding: {} };
+  for (const route of [null, '/local/a', '/extension/panel/new', '/extension/panel/new?codexMultiTab=']) {
+    context.document = browserFixture(route).doc;
+    for (const next of [pending, incomplete, failed]) {
+      state = next;
+      assert.equal(after(), before());
+    }
+  }
+}
+
+test('26.1021 拆分分块：API 分块只获取一次 API 并观察标题，引导分块在服务判断后门控', () => {
+  const patches = getCorePatches('26.1021.22027');
+  assert.deepEqual(patches.map(patch => patch.file), ['out/extension.js', 'webview/assets/message-bus-4113ba7287d7.js',
+    'webview/assets/use-nux-cbb39779849d.js', 'webview/assets/app-runtime-ca74aa759873.js']);
+  const [, api, onboarding] = patches;
+  const browser = browserFixture();
+  let acquisitions = 0;
+  const lazy = api.transform('var c,ready;function l(){if(ready)return;ready=!0;c=acquireVsCodeApi()}l();l();');
+  vm.runInNewContext(lazy, { document: browser.doc, window: browser.win, URLSearchParams,
+    acquireVsCodeApi() { acquisitions++; return browser.api; } });
+  assert.equal(acquisitions, 1);
+  assert.equal(browser.messages[0].title, 'Codex');
+  browser.doc.title = '拆分分块会话';
+  browser.mutate(); browser.flush();
+  assert.equal(browser.messages[1].title, '拆分分块会话');
+  assert.throws(() => api.transform('var c;'), /特征/);
+  verifyIdeOnboardingGate(ideNuxFixture, onboarding.transform(ideNuxFixture));
+  // 锚点必须包含官方的无服务判断，避免门控被提前到该判断之前。
+  assert.throws(() => onboarding.transform(ideNuxFixture.replace('if(l?.ideOnboarding==null)return`none`;', '')), /特征/);
+  assert.throws(() => onboarding.transform(ideNuxFixture.repeat(2)), /特征/);
+  assert.throws(() => transformWebview(`c=acquireVsCodeApi();${ideNuxFixture}`, 'c'), /未知 webview/);
 });
 
 for (const [version, asset] of Object.entries(versions)) {
@@ -659,5 +725,89 @@ for (const version of ['26.1007.21434', '26.51007.21434']) {
     assert.equal(listenerDisposed, true);
     assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
     for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+  });
+}
+
+// 26.1021 起核心补丁分布在 API、首次引导和路由分块；入口分块只用于识别版本，不得改动。
+const splitVersions = {
+  '26.1021.22027': {
+    entry: 'webview/assets/app-initial-13f932cb2f13.js',
+    api: 'webview/assets/message-bus-4113ba7287d7.js',
+    onboarding: 'webview/assets/use-nux-cbb39779849d.js',
+    location: 'webview/assets/app-runtime-ca74aa759873.js',
+  },
+};
+
+for (const [version, assets] of Object.entries(splitVersions)) {
+  test(`${version} 真实拆分分块：核心降级应用、幂等、门控执行、未知版本拒绝及逐字节恢复`, t => {
+    const installed = installedRoot(version);
+    if (!fs.existsSync(installed)) return t.skip(`本机未安装 ${version}`);
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-split-core-test-'));
+    t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+    const root = path.join(temporary, 'extension'), backups = path.join(temporary, 'backups');
+    const host = 'out/extension.js';
+    const patchedFiles = [host, assets.api, assets.onboarding, assets.location];
+    const originals = new Map();
+    for (const file of ['package.json', 'webview/index.html', assets.entry, ...patchedFiles]) {
+      const target = path.join(root, file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      originals.set(file, officialOriginal(version, installed, file));
+      fs.writeFileSync(target, originals.get(file));
+    }
+    assert.deepEqual(getNativePatchFiles(version), []);
+    const dry = patchExtension(root, 'dry-run', backups);
+    assert.equal(dry.status, 'ready');
+    assert.equal(dry.degraded, true);
+    assert.deepEqual(dry.files, patchedFiles);
+    assert.equal(fs.existsSync(backups), false);
+    assert.equal(patchExtension(root, 'apply', backups).degraded, true);
+    const manifest = JSON.parse(fs.readFileSync(path.join(backups, fs.readdirSync(backups)[0], 'manifest.json'), 'utf8'));
+    assert.equal(manifest.mode, 'core-only');
+    assert.equal(manifest.patchVersion, require('../package.json').version);
+    assert.deepEqual(manifest.files.map(entry => entry.file), patchedFiles);
+    assert.deepEqual(fs.readFileSync(path.join(root, assets.entry)), originals.get(assets.entry));
+
+    const read = file => fs.readFileSync(path.join(root, file), 'utf8');
+    const patchedHost = read(host);
+    new vm.Script(patchedHost);
+    for (const marker of ['case"codex-multi-tab-title"', 'case"codex-multi-tab-route"', 'codexMultiTab.internalBridge', 'e.push($e),(function registerSidebarBridge(']) {
+      assert.equal(patchedHost.split(marker).length, 2, marker);
+    }
+    for (const file of [assets.api, assets.onboarding, assets.location]) {
+      const syntax = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: read(file), encoding: 'utf8' });
+      assert.equal(syntax.status, 0, `${file}: ${syntax.stderr}`);
+      assert.notDeepEqual(fs.readFileSync(path.join(root, file)), originals.get(file), file);
+    }
+    const api = read(assets.api);
+    assert.equal(api.split('acquireVsCodeApi()').length, 2);
+    assert.equal(api.split(`c=acquireVsCodeApi();(${observeTitle.toString()})(c)`).length, 2);
+    const location = read(assets.location);
+    assert.equal(location.split('E as codexMultiTabOriginalLocation,').length, 2);
+    assert.equal(location.split('import{c as codexMultiTabApi,i as I,n as ye,r as be}from"./message-bus-4113ba7287d7.js"').length, 2);
+    assert.match(location, /\nfunction W\(\)\{const location=codexMultiTabOriginalLocation\(\);N\(\)\.useLayoutEffect\(/);
+    verifyIdeOnboardingGate(extractFunction(originals.get(assets.onboarding).toString(), 'v'), extractFunction(read(assets.onboarding), 'v'));
+
+    const patched = new Map(patchedFiles.map(file => [file, fs.readFileSync(path.join(root, file))]));
+    for (const action of ['dry-run', 'apply']) {
+      const repeated = patchExtension(root, action, backups);
+      assert.equal(repeated.status, 'already-applied');
+      assert.equal(repeated.degraded, true);
+      for (const [file, bytes] of patched) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+    }
+    assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
+    for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+
+    // 版本号变化但全部审计字节相同才复用配置；任一拆分分块变化都拒绝且不写入。
+    const pkg = JSON.parse(originals.get('package.json'));
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ ...pkg, version: `${version}9` }));
+    assert.equal(patchExtension(root, 'dry-run', backups).status, 'ready');
+    fs.appendFileSync(path.join(root, assets.onboarding), '\n// 未审计的未来版本');
+    const changed = fs.readFileSync(path.join(root, assets.onboarding));
+    assert.throws(() => patchExtension(root, 'apply', backups), /尚不兼容/);
+    fs.writeFileSync(path.join(root, 'package.json'), originals.get('package.json'));
+    assert.throws(() => patchExtension(root, 'apply', backups), /哈希不匹配/);
+    assert.deepEqual(fs.readFileSync(path.join(root, assets.onboarding)), changed);
+    for (const file of [host, assets.api, assets.location]) assert.deepEqual(fs.readFileSync(path.join(root, file)), originals.get(file), file);
+    assert.deepEqual(fs.readdirSync(backups).filter(name => !name.startsWith('.')), []);
   });
 }

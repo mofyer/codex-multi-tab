@@ -73,6 +73,22 @@ const PROFILES = {
     nuxAnchor: 'function FGi(){let{data:e,isLoading:t}=UC(hs.NUX_2025_09_15),{authMethod:n}=Lf();',
     webHash: 'c755dbca916c0f830a554fe2e3057f8642b32394bea7701338e5d506f692ad56',
   },
+  // 26.1021 起 acquireVsCodeApi、首次引导和 useLocation 调用方拆到独立分块；
+  // 入口分块只用于识别版本，各分块按精确哈希分别打补丁。原生历史尚未审计。
+  '26.1021.22027': {
+    hostAnchor: 'case"navigate-in-new-editor-tab":{let n=F1(r.path);',
+    hostHash: 'a9cc6736cd2c2d22f6cf43fc5763d5f8a873e4f741f522b44a600b1926f4e627',
+    asset: 'webview/assets/app-initial-13f932cb2f13.js',
+    webHash: '9852ece5b9a25906b654fa8cccd77873105fe1b88556b141fc35dc4062511629',
+    api: 'c',
+    nuxAnchor: 'function v(){let{data:e,isLoading:t}=a(g),{authMethod:n}=f();if(l?.ideOnboarding==null)return`none`;',
+    split: {
+      api: ['webview/assets/message-bus-4113ba7287d7.js', '9536ce9674179537acc6ecb09a74a01af08b203f4eb812851ea05182311c3ff0'],
+      onboarding: ['webview/assets/use-nux-cbb39779849d.js', '549c38283399a71024a529f534738d759d42a37c7c304874b63d2596ad31baff'],
+      location: ['webview/assets/app-runtime-ca74aa759873.js', 'd2564b2aa1f07c7a0f9d2179544823020dcf3b26c7e66adcc0734293d3100f68'],
+    },
+    coreOnly: true,
+  },
 };
 
 // 仅按消息来源定位辅助扩展面板，侧栏和其他编辑器不参与更新。
@@ -134,14 +150,37 @@ function transformHost(source, version = '26.908.40401') {
     `case"codex-multi-tab-title":{(${updatePanelTitle.toString()})(this,e,r.title);break;}${anchor}`);
 }
 
-function transformWebview(source, api) {
+function transformTitleApi(source, api) {
   const anchor = `${api}=acquireVsCodeApi()`;
-  const profile = Object.values(PROFILES).find(item => item.api === api);
-  if (!profile) throw new Error('未知 webview 补丁配置，拒绝修改');
-  const withTitle = replaceOnce(source, anchor, `${anchor};(${observeTitle.toString()})(${api})`);
-  const nuxReplacement = profile.nuxAnchor.replace('isLoading:t}', 'isLoading:t,status:codexNuxStatus,error:codexNuxError}')
+  return replaceOnce(source, anchor, `${anchor};(${observeTitle.toString()})(${api})`);
+}
+
+function transformOnboarding(source, nuxAnchor) {
+  const nuxReplacement = nuxAnchor.replace('isLoading:t}', 'isLoading:t,status:codexNuxStatus,error:codexNuxError}')
     + `if((${waitForOnboardingState.toString()})(codexNuxStatus,codexNuxError))return;`;
-  return replaceOnce(withTitle, profile.nuxAnchor, nuxReplacement);
+  return replaceOnce(source, nuxAnchor, nuxReplacement);
+}
+
+function transformWebview(source, api) {
+  const profile = Object.values(PROFILES).find(item => item.api === api && !item.split);
+  if (!profile) throw new Error('未知 webview 补丁配置，拒绝修改');
+  return transformOnboarding(transformTitleApi(source, api), profile.nuxAnchor);
+}
+
+// 拆分版本依次修改 API、首次引导和路由分块；数组顺序即备份清单顺序。
+function getCorePatches(version) {
+  const profile = PROFILES[version];
+  const host = { file: 'out/extension.js', originalHash: profile.hostHash,
+    transform: source => transformSidebarHost(transformHost(source, version), version) };
+  if (!profile.split) {
+    return [host, { file: profile.asset, originalHash: profile.webHash,
+      transform: source => transformSidebarWebview(transformWebview(source, profile.api), version) }];
+  }
+  const { api, onboarding, location } = profile.split;
+  return [host,
+    { file: api[0], originalHash: api[1], transform: source => transformTitleApi(source, profile.api) },
+    { file: onboarding[0], originalHash: onboarding[1], transform: source => transformOnboarding(source, profile.nuxAnchor) },
+    { file: location[0], originalHash: location[1], transform: source => transformSidebarWebview(source, version) }];
 }
 
 function hash(bytes) {
@@ -158,6 +197,7 @@ function resolveProfileVersion(root, version, manifest, checkDependencies, inclu
     const files = [
       { file: 'out/extension.js', originalHash: profile.hostHash },
       { file: profile.asset, originalHash: profile.webHash },
+      ...Object.values(profile.split ?? {}).map(([file, originalHash]) => ({ file, originalHash })),
       ...(includeNative ? getNativePatchFiles(candidate) : []),
       ...(checkDependencies && includeNative ? getNativeDependencies(candidate) : []),
     ];
@@ -214,10 +254,7 @@ function patchExtensionUnlocked(directory, action, backupRoot) {
     profileVersion = resolveProfileVersion(root, pkg.version, savedManifest, action !== 'restore', false);
   }
   const profile = PROFILES[profileVersion];
-  const corePatches = [
-    { file: 'out/extension.js', originalHash: profile.hostHash, transform: source => transformSidebarHost(transformHost(source, profileVersion), profileVersion) },
-    { file: profile.asset, originalHash: profile.webHash, transform: source => transformSidebarWebview(transformWebview(source, profile.api), profileVersion) },
-  ];
+  const corePatches = getCorePatches(profileVersion);
   const nativePatches = getNativePatchFiles(profileVersion);
   const nativeCompatible = action === 'restore' || (nativePatches.length > 0 && nativePatches.every(patch => {
     const file = path.join(root, patch.file);
@@ -360,4 +397,5 @@ function runCli() {
 
 if (require.main === module) runCli();
 
-module.exports = { runCli, patchExtension, transformHost, transformWebview, updatePanelTitle, observeTitle, waitForOnboardingState };
+module.exports = { runCli, patchExtension, getCorePatches, transformHost, transformWebview, transformTitleApi, transformOnboarding,
+  updatePanelTitle, observeTitle, waitForOnboardingState };

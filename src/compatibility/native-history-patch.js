@@ -62,6 +62,8 @@ const PROFILES = {
     panel: 'new-thread-panel-page-5d143ae20d2e.js', panelHash: 'f9a43d18f38bcdf49bf196f252beac929768afeaf494e888b781d9f4c787f7a0', panelChildren: 'f,C', panelJsx: 'F',
     dependencies: [["app-initial-c4ebaa710049.js","50e2af3d8c3d0e3c52612beb2d95940cc818dfe979d6d85a9fa61af5526640bc"],["app-initial-fee819fe4f22.js","460201045b5f5a4255fda737c9baa4768367a973d735cb37f3467bfe6af95316"]],
   },
+  // 26.1021 重写了历史面板分块和置顶查询（IDE 宿主不再提供置顶服务），待单独审计。
+  '26.1021.22027': { baseOnly: true },
 };
 
 function replaceOnce(source, anchor, replacement) {
