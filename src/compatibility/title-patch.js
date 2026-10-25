@@ -74,7 +74,7 @@ const PROFILES = {
     webHash: 'c755dbca916c0f830a554fe2e3057f8642b32394bea7701338e5d506f692ad56',
   },
   // 26.1021 起 acquireVsCodeApi、首次引导和 useLocation 调用方拆到独立分块；
-  // 入口分块只用于识别版本，各分块按精确哈希分别打补丁。原生历史尚未审计。
+  // 入口分块只用于识别版本，各分块按精确哈希分别打补丁。原生历史另按 native-history-patch 审计。
   '26.1021.22027': {
     hostAnchor: 'case"navigate-in-new-editor-tab":{let n=F1(r.path);',
     hostHash: 'a9cc6736cd2c2d22f6cf43fc5763d5f8a873e4f741f522b44a600b1926f4e627',
@@ -87,7 +87,6 @@ const PROFILES = {
       onboarding: ['webview/assets/use-nux-cbb39779849d.js', '549c38283399a71024a529f534738d759d42a37c7c304874b63d2596ad31baff'],
       location: ['webview/assets/app-runtime-ca74aa759873.js', 'd2564b2aa1f07c7a0f9d2179544823020dcf3b26c7e66adcc0734293d3100f68'],
     },
-    coreOnly: true,
   },
 };
 
@@ -286,9 +285,9 @@ function patchExtensionUnlocked(directory, action, backupRoot) {
   const expectedFiles = patches.map(patch => patch.file);
   if (fs.existsSync(backup)) {
     const manifest = savedManifest;
-    // 旧版只修改前两个文件，保留其恢复路径以便安全升级组合补丁。
-    if (!manifest || manifest.root !== root || manifest.version !== pkg.version || manifest.format !== 1
-      || !Array.isArray(manifest.files) || ![2, expectedFiles.length].includes(manifest.files.length)) throw new Error('备份清单不匹配，拒绝修改');
+    // 旧版或 core-only 只修改核心文件，保留其恢复路径以便安全升级组合补丁。
+    if (!manifest || manifest.root !== root || manifest.version !== pkg.version || manifest.format !== 1 || !Array.isArray(manifest.files)
+      || ![2, corePatches.length, expectedFiles.length].includes(manifest.files.length)) throw new Error('备份清单不匹配，拒绝修改');
     const entries = manifest.files.map((entry, index) => {
       if (entry.file !== expectedFiles[index] || entry.backup !== `${index}.original`
         || entry.originalHash !== patches[index].originalHash) throw new Error('备份路径或原件哈希不匹配，拒绝修改');

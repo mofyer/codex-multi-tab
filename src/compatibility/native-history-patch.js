@@ -62,8 +62,27 @@ const PROFILES = {
     panel: 'new-thread-panel-page-5d143ae20d2e.js', panelHash: 'f9a43d18f38bcdf49bf196f252beac929768afeaf494e888b781d9f4c787f7a0', panelChildren: 'f,C', panelJsx: 'F',
     dependencies: [["app-initial-c4ebaa710049.js","50e2af3d8c3d0e3c52612beb2d95940cc818dfe979d6d85a9fa61af5526640bc"],["app-initial-fee819fe4f22.js","460201045b5f5a4255fda737c9baa4768367a973d735cb37f3467bfe6af95316"]],
   },
-  // 26.1021 重写了历史面板分块和置顶查询（IDE 宿主不再提供置顶服务），待单独审计。
-  '26.1021.22027': { baseOnly: true },
+  // 26.1021 改由 IDE 服务 RPC 读写置顶，但 VS Code 宿主未提供该服务；原生行与菜单在 pending-thread-start-row 分块。
+  '26.1021.22027': {
+    serviceHistory: true,
+    hostHash: 'a9cc6736cd2c2d22f6cf43fc5763d5f8a873e4f741f522b44a600b1926f4e627',
+    services: 'new J1({worktreeSnapshots:i,',
+    broadcast: 'this.broadcastPersistedAtomUpdate(X,ye)', broadcastKey: 'X',
+    navigation: 'case"navigate-in-new-editor-tab":{let n=F1(r.path);', vscode: 'Be',
+    app: 'pending-thread-start-row-107fd6c2d961.js', appHash: 'bc279b0013be34888f7ed8e7292a84be8b4d19bb8863363831e81106151fcbd2',
+    header: 'header-e3d61ada3ae3.js', headerHash: '000229e44f2d46bafdf366f7349e746e104c66bfd05e049d2d36c8f2c796916a',
+    headerWrapper: 'header-8d251301fd26.js', wrapperHash: 'bab5bd019475c295fda11a519c5cfd8f4a41bfaaff98f85e47412b5cde4c23fa',
+    panel: 'new-thread-panel-page-79b34ce3453f.js', panelHash: '324437bcf918271b92f1f1207f1084389825d8ac5ea7a849fe8d3c42f929bc37', panelChildren: 'f,C', panelJsx: 'F',
+    // 置顶 atom 与查询、菜单文案、置顶写入、RPC 服务安装及历史导航消息所在分块。
+    dependencies: [
+      ['app-server-manager-signals-3484150562ce.js', '2fa1cacbd29adb11e55e91206718d420abf3bb50ba02154db20be922f400166c'],
+      ['sidebar-thread-action-presentation-cf3c882f4ace.js', '6e2f309d4f06c295d0e409b93d6b052e508e20ff351db1ee80d961a7993ec30a'],
+      ['sidebar-section-membership-121d3250235a.js', '468b88beea2856bd92ce93cee6982011df955a4e36bec9556e566709029de045'],
+      ['pending-thread-pinning-b90cf121af3d.js', '1d2f0e9715e53d8b06910f77c5944f52eaea5361b0cfd19c03198aa2b1cbffde'],
+      ['initialize-app-host-services.extension-f722db488e05.js', '7d62f3e00516acd50693610d449cdc92e25a4599a18ab2e9353f8ab537777d1c'],
+      ['use-navigate-to-local-conversation-d318e1357ce4.js', '4b87137cd1dbdea90f7b124710a53fedb1fcc0929b76f8e844676c3519110ae5'],
+    ],
+  },
 };
 
 function replaceOnce(source, anchor, replacement) {
@@ -103,6 +122,16 @@ async function nativePinnedThreads(state, input) {
   });
 }
 
+// 按官方 pinnedThreads RPC 形状接入同一 atom；排序请求不受支持，明确返回失败而非假成功。
+// 26.1021 的 app-server 置顶开关恒为 false，list 不带选项；置顶只来自本机官方 atom。
+function nativePinnedThreadService(state, updatePins) {
+  return {
+    list: async () => updatePins(state),
+    set: async input => updatePins(state, input ?? {}),
+    setOrder: async () => ({ success: false }),
+  };
+}
+
 // 来源面板在弹窗前固定；取消或面板关闭时都不导航，也不终止任何任务。
 async function navigateHistoryInPlace(host, vscode, webview, message) {
   if (typeof message.path !== 'string' || !/^\/local\/[A-Za-z0-9_-]+(?:\?[^#]*)?$/.test(message.path)) return false;
@@ -134,10 +163,31 @@ function partitionNativeHistory(items, conversations, pins, enabled) {
   return { pinned, items: items.filter(item => !isPinned(item)), conversations: conversations.filter(item => !ids.has(item.id)) };
 }
 
+// 26.1021 起本地会话以 conversationId 标识；待启动会话和待建工作树行保持原位。
+function partitionConversationHistory(items, conversations, pins, enabled) {
+  if (!enabled) return { pinned: [], items, conversations };
+  const ids = new Set(pins);
+  const isPinned = item => item.kind === 'local' && item.pendingThreadStart == null && item.conversation != null
+    && ids.has(item.conversation.conversationId);
+  const candidates = new Map(items.filter(isPinned).map(item => [item.conversation.conversationId, item]));
+  for (const conversation of conversations) {
+    const id = conversation.conversationId;
+    if (ids.has(id) && !candidates.has(id)) candidates.set(id, { kind: 'local', key: `codex-multi-tab-pin:${id}`, conversation });
+  }
+  const pinned = pins.flatMap(id => candidates.has(id) ? [candidates.get(id)] : []);
+  return { pinned, items: items.filter(item => !isPinned(item)), conversations: conversations.filter(item => !ids.has(item.conversationId)) };
+}
+
 function transformNativeHost(source, profile) {
-  const pins = '"list-pinned-threads":async()=>({threadIds:[]}),"set-thread-pinned":async()=>({success:!1})';
-  source = replaceOnce(source, pins,
-    `"list-pinned-threads":async()=>(${nativePinnedThreads.toString()})(this.globalState),"set-thread-pinned":async e=>(${nativePinnedThreads.toString()})(this.globalState,e)`);
+  if (profile.serviceHistory) {
+    // 服务对象按 webview 会话创建，this 为官方 provider，与侧栏桥共用 globalState。
+    source = replaceOnce(source, profile.services, profile.services.replace('({',
+      `({pinnedThreads:(${nativePinnedThreadService.toString()})(this.globalState,(${nativePinnedThreads.toString()})),`));
+  } else {
+    const pins = '"list-pinned-threads":async()=>({threadIds:[]}),"set-thread-pinned":async()=>({success:!1})';
+    source = replaceOnce(source, pins,
+      `"list-pinned-threads":async()=>(${nativePinnedThreads.toString()})(this.globalState),"set-thread-pinned":async e=>(${nativePinnedThreads.toString()})(this.globalState,e)`);
+  }
   const broadcast = profile.broadcast ?? 'this.broadcastPersistedAtomUpdate(he,be)';
   source = replaceOnce(source, broadcast, `${broadcast},${profile.broadcastKey ?? (profile.broadcast ? 'se' : 'he')}==="pinned-thread-ids"&&this.broadcastToAllViews({type:"pinned-threads-updated"})`);
   const navigation = profile.navigation ?? 'case"navigate-in-new-editor-tab":{let n=pI(r.path);';
@@ -146,6 +196,7 @@ function transformNativeHost(source, profile) {
 }
 
 function transformNativeApp(source, profile) {
+  if (profile.serviceHistory) return transformServiceNativeApp(source);
   if (profile.splitHistory) return transformSplitNativeApp(source);
   const modern = profile.row === 'YBn';
   const rowProps = modern ? 'setPendingWorktreePinned:v,threadSummary:y,...b}=e,x='
@@ -207,7 +258,44 @@ function transformSplitNativeHeader(source, profile) {
   return replaceOnce(source, 'I.length===0?M?', 'I.length===0?codexPartition.pinned.length>0?null:M?');
 }
 
+// 26.1021 的增强行 rs 在 pending-thread-start-row 分块；rs 内部以局部变量遮蔽 K，
+// 菜单逻辑放在模块作用域读取官方置顶 atom，并按 id 复用官方文案和图标。
+function transformServiceNativeApp(source) {
+  source = replaceOnce(source, 'setPendingWorktreePinned:E,threadSummary:D,...ne}=e',
+    'setPendingWorktreePinned:E,threadSummary:D,codexMultiTabHistory:codexHistory,...ne}=e');
+  source = replaceOnce(source, 'tn=e=>{if(H)return[', 'tn=e=>{if(codexHistory)return codexMultiTabHistoryMenu(F,i,Vt);if(H)return[');
+  source = replaceOnce(source, 'getMenuItems:an||H?()=>Z(`row-actions`):void 0',
+    'getMenuItems:codexHistory||an||H?()=>Z(`row-actions`):void 0');
+  // 不为 IDE 的有限菜单预加载桌面项目管理数据。
+  source = replaceOnce(source, '$t=async()=>{await Promise.all([yi(F),u?q(F):void 0])}',
+    '$t=async()=>{if(codexHistory)return;await Promise.all([yi(F),u?q(F):void 0])}');
+  return source + `\nfunction codexMultiTabHistoryInit(){ls();ai();pt()}\nfunction codexMultiTabHistoryMenu(scope,threadId,rename){let pinned=scope.get(K).includes(threadId);return oi({pin:{id:pinned?\`unpin-thread\`:\`pin-thread\`,onSelect:()=>{lr(scope,threadId,!pinned)}},rename:{id:\`rename-thread\`,onSelect:rename}})}\nfunction codexMultiTabHistoryRow(props){let pins=N(K);let enhanced=(${isHelperDocument.toString()})();return(0,Q.jsx)(enhanced?rs:Za,enhanced?{...props,codexMultiTabHistory:true,isPinned:pins.includes(props.conversationId),canPin:true,showPinActionOnHover:true}:props)}\nexport{codexMultiTabHistoryRow,codexMultiTabHistoryInit,K as codexMultiTabPinnedIds};\n`;
+}
+
+function transformServiceNativeHeader(source, profile) {
+  source = `import{codexMultiTabHistoryRow,codexMultiTabHistoryInit,codexMultiTabPinnedIds}from"./${profile.app}";\n` + source;
+  source = replaceOnce(source, 'Nn=e((()=>{kn=f(),', 'Nn=e((()=>{codexMultiTabHistoryInit(),kn=f(),');
+  for (const anchor of [
+    '(0,Z.jsx)(ot,{conversationId:n,hostId:r,isActive:a,metaContent:c,onClick:o,onActiveArchiveStart:s})',
+    '(0,Z.jsx)(ot,{conversationId:n.conversation.conversationId,hostId:n.conversation.hostId,isActive:r,metaContent:e,onClick:i,onActiveArchiveStart:a})',
+  ]) source = replaceOnce(source, anchor, anchor.replace('(ot,', '(codexMultiTabHistoryRow,'));
+  source = replaceOnce(source, 'function Cn(e){let t=(0,kn.c)(37),',
+    'function Cn(e){let codexPins=te(codexMultiTabPinnedIds);let t=(0,kn.c)(38),');
+  source = replaceOnce(source, ':O,ae;',
+    `:O;let codexPartition=(${partitionConversationHistory.toString()})(R,ie,codexPins,(${isHelperDocument.toString()})()&&h!==\`cloud\`);R=codexPartition.items;ie=codexPartition.conversations;let ae;`);
+  const group = '(0,Z.jsxs)(Z.Fragment,{children:[(0,Z.jsx)(`div`,{className:`px-[var(--padding-row-x)] py-1 text-sm text-tertiary`,children:`已置顶`}),...codexPartition.pinned.map(item=>(0,Z.jsx)(Mn,{item,isActive:item.conversation.conversationId===g,onClose:i,onActiveArchiveStart:d},item.key))]})';
+  source = replaceOnce(source, 'children:[oe,H,U]', `children:[codexPartition.pinned.length>0?${group}:null,oe,H,U]`);
+  // 分组数组每次重新派生，包含最新会话元数据；全已置顶时也重绘活动行及回调。
+  source = replaceOnce(source, 't[27]!==V.Section||t[28]!==oe||t[29]!==H||t[30]!==U?',
+    't[37]!==codexPartition.pinned||t[27]!==V.Section||t[28]!==oe||t[29]!==H||t[30]!==U?');
+  source = replaceOnce(source, 't[30]=U,t[31]=W', 't[30]=U,t[37]=codexPartition.pinned,t[31]=W');
+  const localEmpty = 'ie.length?ie.map(e=>(0,Z.jsx)(jn,{conversationId:e.conversationId,hostId:e.hostId,updatedAt:e.recencyAt??e.updatedAt,isActive:g===e.conversationId,onClose:i,onActiveArchiveStart:d},e.conversationId)):M?';
+  source = replaceOnce(source, localEmpty, localEmpty.replace(':M?', ':codexPartition.pinned.length>0?null:M?'));
+  return replaceOnce(source, 'R.length===0?M?', 'R.length===0?codexPartition.pinned.length>0?null:M?');
+}
+
 function transformNativeHeader(source, profile) {
+  if (profile.serviceHistory) return transformServiceNativeHeader(source, profile);
   if (profile.splitHistory) return transformSplitNativeHeader(source, profile);
   source = `import{codexMultiTabHistoryRow,codexMultiTabHistoryInit,codexMultiTabPinnedIds}from"./${profile.app}";\n` + source;
   const initAnchor = profile.headerInitAnchor ?? 'Mn=e((()=>{On=C(),';
@@ -255,4 +343,5 @@ function getNativeDependencies(version) {
     ...(profile.dependencies ?? []).map(([file, originalHash]) => ({ file: `webview/assets/${file}`, originalHash }))];
 }
 
-module.exports = { getNativePatchFiles, getNativeDependencies, isHelperDocument, nativePinnedThreads, navigateHistoryInPlace, partitionNativeHistory };
+module.exports = { getNativePatchFiles, getNativeDependencies, isHelperDocument, nativePinnedThreads, nativePinnedThreadService,
+  navigateHistoryInPlace, partitionNativeHistory, partitionConversationHistory };

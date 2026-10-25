@@ -739,7 +739,7 @@ const splitVersions = {
 };
 
 for (const [version, assets] of Object.entries(splitVersions)) {
-  test(`${version} 真实拆分分块：核心降级应用、幂等、门控执行、未知版本拒绝及逐字节恢复`, t => {
+  test(`${version} 真实拆分分块：原生资产缺失时核心降级、幂等、门控执行、未知版本拒绝及逐字节恢复`, t => {
     const installed = installedRoot(version);
     if (!fs.existsSync(installed)) return t.skip(`本机未安装 ${version}`);
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-split-core-test-'));
@@ -754,7 +754,7 @@ for (const [version, assets] of Object.entries(splitVersions)) {
       originals.set(file, officialOriginal(version, installed, file));
       fs.writeFileSync(target, originals.get(file));
     }
-    assert.deepEqual(getNativePatchFiles(version), []);
+    assert.ok(getNativePatchFiles(version).length > 0, '原生历史已审计，但本用例故意不提供其分块');
     const dry = patchExtension(root, 'dry-run', backups);
     assert.equal(dry.status, 'ready');
     assert.equal(dry.degraded, true);
@@ -809,5 +809,84 @@ for (const [version, assets] of Object.entries(splitVersions)) {
     assert.deepEqual(fs.readFileSync(path.join(root, assets.onboarding)), changed);
     for (const file of [host, assets.api, assets.location]) assert.deepEqual(fs.readFileSync(path.join(root, file)), originals.get(file), file);
     assert.deepEqual(fs.readdirSync(backups).filter(name => !name.startsWith('.')), []);
+  });
+}
+
+for (const [version, assets] of Object.entries(splitVersions)) {
+  test(`${version} 真实全量资产：0.5.10 core-only 安装经兼容管理器迁移为原生历史增强，全量幂等与逐字节恢复`, async t => {
+    const installed = installedRoot(version);
+    if (!fs.existsSync(installed)) return t.skip(`本机未安装 ${version}`);
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-split-native-test-'));
+    t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+    const root = path.join(temporary, 'extension'), backups = path.join(temporary, 'backups');
+    const coreFiles = ['out/extension.js', assets.api, assets.onboarding, assets.location];
+    const nativeFiles = getNativePatchFiles(version).map(entry => entry.file).filter(file => !coreFiles.includes(file));
+    const dependencies = getNativeDependencies(version).map(entry => entry.file);
+    const files = [...new Set(['package.json', 'webview/index.html', assets.entry, ...coreFiles, ...nativeFiles, ...dependencies])];
+    const originals = new Map(files.map(file => [file, officialOriginal(version, installed, file)]));
+    const write = file => {
+      const target = path.join(root, file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, originals.get(file));
+    };
+    // 先模拟 0.5.10：只有核心分块可用，生成 4 文件 core-only 备份。
+    for (const file of files) if (!nativeFiles.includes(file) && !dependencies.includes(file)) write(file);
+    const initial = patchExtension(root, 'apply', backups);
+    assert.equal(initial.degraded, true);
+    const manifestPath = path.join(backups, fs.readdirSync(backups)[0], 'manifest.json');
+    const coreManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    assert.deepEqual(coreManifest.files.map(entry => entry.file), coreFiles);
+    coreManifest.patchVersion = '0.5.10';
+    fs.writeFileSync(manifestPath, JSON.stringify(coreManifest));
+    for (const file of files) if (!fs.existsSync(path.join(root, file))) write(file);
+
+    const messages = [];
+    const vscode = {
+      extensions: { getExtension: () => ({ extensionPath: root, packageJSON: { version } }), onDidChange: () => ({ dispose() {} }) },
+      window: { showInformationMessage: message => { messages.push(message); return Promise.resolve(undefined); },
+        showWarningMessage: message => { messages.push(message); return Promise.resolve(undefined); } },
+      commands: { executeCommand: () => assert.fail('不得自动重载窗口') },
+    };
+    const manager = createCompatibilityManager(vscode, { globalStorageUri: { fsPath: temporary } },
+      (directory, action) => patchExtension(directory, action, backups));
+    await manager.requestCheck();
+    manager.dispose();
+    assert.deepEqual(messages, ['Codex Multi Tab 增强已适配当前官方扩展。请在运行中的任务结束后重载窗口生效。']);
+    const manifest = JSON.parse(fs.readFileSync(path.join(backups, fs.readdirSync(backups).filter(name => !name.startsWith('.'))[0], 'manifest.json'), 'utf8'));
+    assert.notEqual(manifest.mode, 'core-only');
+    assert.equal(manifest.patchVersion, require('../package.json').version);
+    const expected = [...coreFiles, ...nativeFiles];
+    assert.deepEqual(manifest.files.map(entry => entry.file), expected);
+
+    const patched = new Map(expected.map(file => [file, fs.readFileSync(path.join(root, file))]));
+    for (const [file, bytes] of patched) {
+      assert.notDeepEqual(bytes, originals.get(file), file);
+      if (file === 'out/extension.js') new vm.Script(bytes.toString());
+      else {
+        const syntax = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: bytes, encoding: 'utf8' });
+        assert.equal(syntax.status, 0, `${file}: ${syntax.stderr}`);
+      }
+    }
+    const host = patched.get('out/extension.js').toString();
+    for (const marker of ['case"codex-multi-tab-title"', 'case"codex-multi-tab-route"', 'codexMultiTab.internalBridge',
+      'new J1({pinnedThreads:(', 'this.broadcastToAllViews({type:"pinned-threads-updated"})', 'function navigateHistoryInPlace(']) {
+      assert.equal(host.split(marker).length, 2, marker);
+    }
+    for (const file of [assets.entry, ...dependencies]) assert.deepEqual(fs.readFileSync(path.join(root, file)), originals.get(file), file);
+    for (const action of ['dry-run', 'apply']) {
+      const repeated = patchExtension(root, action, backups);
+      assert.equal(repeated.status, 'already-applied');
+      assert.equal(repeated.degraded, false);
+      for (const [file, bytes] of patched) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+    }
+    // 依赖分块变化时保留已验证的完整增强，不自动恢复或覆盖。
+    const dependency = path.join(root, dependencies[0]);
+    fs.appendFileSync(dependency, '\n// 未审计改动');
+    assert.throws(() => patchExtension(root, 'apply', backups), /依赖资产不兼容/);
+    for (const [file, bytes] of patched) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+    fs.writeFileSync(dependency, originals.get(dependencies[0]));
+    assert.equal(patchExtension(root, 'restore', backups).status, 'restored');
+    for (const [file, bytes] of originals) assert.deepEqual(fs.readFileSync(path.join(root, file)), bytes, file);
+    assert.equal(patchExtension(root, 'restore', backups).status, 'not-applied');
   });
 }
