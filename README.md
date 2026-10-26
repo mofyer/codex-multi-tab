@@ -124,7 +124,7 @@ macOS 默认存储根目录为 `~/Library/Application Support/Code/User/globalSt
 npm run check
 npm test
 npm run package
-code --install-extension dist/codex-multi-tab-0.5.11-mofyer.vsix --force --do-not-sync
+code --install-extension dist/codex-multi-tab-0.5.12-mofyer.vsix --force --do-not-sync
 ```
 
 测试覆盖标签隔离、会话管理、运行态与停止、兼容检测、哈希校验、失败回滚和逐字节恢复。缺少对应官方安装包时，相关实包测试会明确标记跳过。

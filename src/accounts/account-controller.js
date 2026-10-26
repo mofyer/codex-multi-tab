@@ -20,6 +20,7 @@ const environmentMessages = {
   CODEX_MULTI_TAB_ACCOUNT_IDENTITY: '当前登录身份已变化或无法核对，请刷新账号后重试。',
   CODEX_MULTI_TAB_ACCOUNT_CHANGED: '登录文件已被其他操作更新，本次未覆盖，请刷新后重试。',
   CODEX_MULTI_TAB_ACCOUNT_INVALID_AUTH: '登录凭据格式无法安全识别，请先在官方 Codex 中重新登录。',
+  CODEX_MULTI_TAB_ACCOUNT_UNKNOWN_AUTH: '官方登录缓存出现尚未适配的新字段，暂不能保存或切换账号；请更新 Codex Multi Tab 后重试。',
   CODEX_MULTI_TAB_ACCOUNT_NOT_FOUND: '已保存的账号不存在，请刷新账号列表。',
 };
 const preflightMessages = {

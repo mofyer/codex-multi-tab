@@ -127,7 +127,7 @@ On macOS, the default storage root is `~/Library/Application Support/Code/User/g
 npm run check
 npm test
 npm run package
-code --install-extension dist/codex-multi-tab-0.5.11-mofyer.vsix --force --do-not-sync
+code --install-extension dist/codex-multi-tab-0.5.12-mofyer.vsix --force --do-not-sync
 ```
 
 Tests cover tab isolation, conversation management, runtime status and stopping, compatibility detection, hash validation, rollback after failed application, and byte-for-byte restoration. Tests that require an official installation package are explicitly marked as skipped when that package is unavailable.

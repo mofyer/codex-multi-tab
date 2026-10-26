@@ -19,6 +19,14 @@ function auth(email = 'one@example.test', accountId = 'workspace-one', suffix = 
     last_refresh: '2026-09-17T00:00:00Z' }));
 }
 
+// 官方 26.1021 起在 tokens 中记录 OAuth 来源与登录归属；值同样全部为合成数据。
+function currentAuth(email, accountId, suffix, tokenFields = {}) {
+  const value = JSON.parse(auth(email, accountId, suffix));
+  value.tokens = { ...value.tokens, oauth_provenance: { issuer: 'https://auth.example.test', client_id: 'app_synthetic_client' },
+    login_owner_id: `synthetic-owner-${suffix ?? 'initial'}`, ...tokenFields };
+  return Buffer.from(JSON.stringify(value));
+}
+
 async function setup(t, options = {}) {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'codex-multi-tab-accounts-'));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
@@ -494,10 +502,55 @@ test('准备临时文件期间外部刷新时拒绝覆盖', async t => {
   assert.deepEqual(await fs.readdir(app.home), ['auth.json']);
 });
 
+test('官方新版登录缓存的来源与归属字段可保存、切换并原样写回', async t => {
+  const app = await setup(t);
+  const target = currentAuth('two@example.test', 'workspace-two');
+  await app.put(target);
+  const saved = await app.store.saveCurrent(expected('two@example.test', 'workspace-two'));
+  assert.deepEqual(Object.keys(saved).sort(), ['accountId', 'email', 'id', 'label', 'planType']);
+  // 旧格式快照仍然有效，两种格式可在同一账号库中共存。
+  const original = auth(undefined, undefined, 'refreshed');
+  await app.put(original);
+  const result = await app.store.stageSwitch(saved.id, expected());
+  assert.equal(result.changed, true);
+  assert.deepEqual(await fs.readFile(app.file), target);
+  assert.equal((await app.store.list()).length, 2);
+  assert.ok(!JSON.stringify(await app.store.list()).includes('synthetic-owner'));
+  assert.equal(await result.rollback(), true);
+  assert.deepEqual(await fs.readFile(app.file), original);
+  // 官方未填写时可能写为 null。
+  const empty = currentAuth(undefined, undefined, 'empty', { oauth_provenance: null, login_owner_id: null });
+  await app.put(empty);
+  await app.store.saveCurrent(expected());
+  const vault = JSON.parse([...app.values.values()][0]);
+  assert.ok(vault.profiles.some(profile => profile.auth === empty.toString('utf8')));
+});
+
+test('新版登录字段按类型校验；未知字段提示更新扩展而非重新登录', async t => {
+  const app = await setup(t);
+  const provenance = { issuer: 'https://auth.example.test', client_id: 'app_synthetic_client' };
+  for (const fields of [{ oauth_provenance: [] }, { oauth_provenance: 'synthetic' },
+    { oauth_provenance: { ...provenance, issuer: 'http://auth.example.test' } }, { oauth_provenance: { ...provenance, issuer: 'not a url' } },
+    { oauth_provenance: { ...provenance, client_id: ' ' } }, { oauth_provenance: { ...provenance, client_id: 7 } },
+    { oauth_provenance: { ...provenance, client_id: 'x'.repeat(513) } }, { login_owner_id: 7 }, { login_owner_id: '' },
+    { login_owner_id: 'x'.repeat(513) }, { login_owner_id: 'synthetic\nowner' }]) {
+    await app.put(currentAuth(undefined, undefined, undefined, fields));
+    await rejectsCode(app.store.saveCurrent(expected()), 'INVALID_AUTH');
+  }
+  for (const bytes of [currentAuth(undefined, undefined, undefined, { future_token_field: 'synthetic' }),
+    currentAuth(undefined, undefined, undefined, { oauth_provenance: { ...provenance, future_field: 'synthetic' } }),
+    Buffer.from(JSON.stringify({ ...JSON.parse(auth()), other: 'unsupported' }))]) {
+    await app.put(bytes);
+    await assert.rejects(app.store.saveCurrent(expected()), error => error.code === 'CODEX_MULTI_TAB_ACCOUNT_UNKNOWN_AUTH'
+      && /新字段/.test(error.message) && /更新/.test(error.message) && !/重新登录/.test(error.message)
+      && !error.message.includes('synthetic'));
+  }
+  assert.equal(app.values.size, 0);
+});
+
 test('拒绝 API Key、未知结构、JWT identity 不一致及过大认证文件', async t => {
   const app = await setup(t);
   for (const bytes of [Buffer.from('{"OPENAI_API_KEY":"synthetic-key"}'), Buffer.from('{invalid'),
-    Buffer.from(JSON.stringify({ ...JSON.parse(auth()), other: 'unsupported' })),
     Buffer.from(JSON.stringify({ ...JSON.parse(auth()), OPENAI_API_KEY: 'synthetic-key' })),
     Buffer.from(JSON.stringify({ ...JSON.parse(auth()), tokens: { ...JSON.parse(auth()).tokens, account_id: 'other' } }))]) {
     await app.put(bytes);

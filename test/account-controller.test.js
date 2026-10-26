@@ -119,6 +119,7 @@ test('switch failures explain known store errors without exposing exception deta
     ['IDENTITY', /身份.*刷新/],
     ['CHANGED', /登录文件.*未覆盖/],
     ['INVALID_AUTH', /凭据格式.*重新登录/],
+    ['UNKNOWN_AUTH', /新字段.*更新/],
     ['NOT_FOUND', /账号不存在.*刷新/],
     ['STORAGE', /安全存储.*权限/],
     ['UNSUPPORTED', /存储环境.*确认/],

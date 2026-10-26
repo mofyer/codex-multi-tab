@@ -13,6 +13,7 @@ const LOCK_TOKEN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12
 const messages = {
   UNSUPPORTED: '当前认证环境暂不支持账号切换，请使用本地文件存储的 ChatGPT 登录。',
   INVALID_AUTH: '登录凭据格式无法安全识别，请先在官方 Codex 中重新登录。',
+  UNKNOWN_AUTH: '官方登录缓存出现尚未适配的新字段，暂不能保存或切换账号；请更新 Codex Multi Tab 后重试。',
   IDENTITY: '当前登录身份已变化或无法核对，请刷新账号后重试。',
   BUSY: '另一个窗口正在管理账号，请稍后重试。',
   CHANGED: '登录文件已被其他操作更新，本次未覆盖，请刷新后重试。',
@@ -29,20 +30,40 @@ const hash = value => createHash('sha256').update(value).digest('hex');
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = value => typeof value === 'string' && value.trim().length > 0;
 const sameBytes = (left, right) => left === null ? right === null : right !== null && left.equals(right);
+const boundedText = value => nonempty(value) && value.length <= 512 && !/[\x00-\x1f\x7f]/.test(value);
+const REQUIRED_TOKENS = ['id_token', 'access_token', 'refresh_token', 'account_id'];
+// 官方 26.1021 起记录 OAuth 来源与登录归属；不参与身份识别，随快照原样保存和写回。
+const OPTIONAL_TOKENS = ['oauth_provenance', 'login_owner_id'];
+const PROVENANCE_KEYS = ['issuer', 'client_id'];
+
+function httpsUrl(value) {
+  if (!boundedText(value)) return false;
+  try { return new URL(value).protocol === 'https:'; } catch { return false; }
+}
+
+// 未审计的新字段与损坏凭据分开报告：前者重新登录也无法解决，需要更新扩展。
+function checkOptionalTokens(tokens) {
+  const provenance = tokens.oauth_provenance;
+  if (plain(provenance) && Object.keys(provenance).some(key => !PROVENANCE_KEYS.includes(key))) throw fail('UNKNOWN_AUTH');
+  if ((provenance != null && (!plain(provenance) || (provenance.issuer !== undefined && !httpsUrl(provenance.issuer))
+      || (provenance.client_id !== undefined && !boundedText(provenance.client_id))))
+    || (tokens.login_owner_id != null && !boundedText(tokens.login_owner_id))) throw fail('INVALID_AUTH');
+}
 
 /** Decode only for identity comparison; the official client remains responsible for token validation. */
 function parseAuth(bytes) {
   try {
     if (!Buffer.isBuffer(bytes) || bytes.length > MAX_FILE_BYTES) throw fail('INVALID_AUTH');
     const value = JSON.parse(bytes.toString('utf8'));
-    if (!plain(value) || Object.keys(value).some(key => !['auth_mode', 'OPENAI_API_KEY', 'tokens', 'last_refresh'].includes(key))
-      || (value.auth_mode !== undefined && value.auth_mode !== 'chatgpt')
+    if (!plain(value)) throw fail('INVALID_AUTH');
+    if (Object.keys(value).some(key => !['auth_mode', 'OPENAI_API_KEY', 'tokens', 'last_refresh'].includes(key))) throw fail('UNKNOWN_AUTH');
+    if ((value.auth_mode !== undefined && value.auth_mode !== 'chatgpt')
       || (value.OPENAI_API_KEY !== undefined && value.OPENAI_API_KEY !== null)
       || !plain(value.tokens)) throw fail('INVALID_AUTH');
     const tokens = value.tokens;
-    if (Object.keys(tokens).some(key => !['id_token', 'access_token', 'refresh_token', 'account_id'].includes(key))
-      || !['id_token', 'access_token', 'refresh_token', 'account_id'].every(key => nonempty(tokens[key]))
-      || tokens.account_id.length > 512) throw fail('INVALID_AUTH');
+    if (Object.keys(tokens).some(key => !REQUIRED_TOKENS.includes(key) && !OPTIONAL_TOKENS.includes(key))) throw fail('UNKNOWN_AUTH');
+    checkOptionalTokens(tokens);
+    if (!REQUIRED_TOKENS.every(key => nonempty(tokens[key])) || tokens.account_id.length > 512) throw fail('INVALID_AUTH');
     const parts = tokens.id_token.split('.');
     if (parts.length !== 3 || !parts.every(part => /^[A-Za-z0-9_-]+$/.test(part))) throw fail('INVALID_AUTH');
     const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
